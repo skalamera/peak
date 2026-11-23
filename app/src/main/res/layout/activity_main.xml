@@ -18,41 +18,42 @@
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingEnd="8dp">
+            android:gravity="center_vertical|start"
+            android:orientation="vertical"
+            android:paddingEnd="10dp">
 
-            <View
-                android:id="@+id/viewStatusDot"
-                android:layout_width="10dp"
-                android:layout_height="10dp"
-                android:background="@drawable/bg_status_dot" />
+            <ImageView
+                android:id="@+id/ivMercedesLogo"
+                android:layout_width="116dp"
+                android:layout_height="25dp"
+                android:contentDescription="Mercedes-Benz"
+                android:scaleType="fitStart"
+                android:src="@drawable/mercedes_benz_logo" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:orientation="vertical">
+                android:layout_marginTop="2dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:maxLines="1"
-                    android:text="@string/brand_title"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
+                <View
+                    android:id="@+id/viewStatusDot"
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:background="@drawable/bg_status_dot" />
 
                 <TextView
                     android:id="@+id/tvStatusBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="5dp"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:maxWidth="125dp"
+                    android:maxWidth="115dp"
                     android:text="@string/disconnected"
                     android:textColor="@color/text_secondary"
-                    android:textSize="10sp" />
+                    android:textSize="9.5sp" />
             </LinearLayout>
         </LinearLayout>
 

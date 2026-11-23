@@ -31,6 +31,7 @@ class DigitalGaugeCard @JvmOverloads constructor(
     private val valueView: TextView
     private val unitView: TextView
     private val subView: TextView
+    private val btnReset: TextView
     private val barFill: View
 
     init {
@@ -41,7 +42,13 @@ class DigitalGaugeCard @JvmOverloads constructor(
         valueView = findViewById(R.id.tvCardValue)
         unitView = findViewById(R.id.tvCardUnit)
         subView = findViewById(R.id.tvCardSub)
+        btnReset = findViewById(R.id.btnCardReset)
         barFill = findViewById(R.id.viewBarFill)
+
+        if (!isInEditMode) {
+            valueView.typeface = FontCache.racingBoldItalic(context)
+            subView.typeface = FontCache.racingSemiBoldItalic(context)
+        }
 
         TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
             valueView,
@@ -59,6 +66,19 @@ class DigitalGaugeCard @JvmOverloads constructor(
         } else {
             hintView.visibility = View.VISIBLE
             hintView.text = hint
+        }
+    }
+
+    fun setOnResetClickListener(label: String = "↺ RST", listener: (() -> Unit)?) {
+        if (listener == null) {
+            btnReset.visibility = View.GONE
+            btnReset.setOnClickListener(null)
+        } else {
+            btnReset.visibility = View.VISIBLE
+            btnReset.text = label
+            btnReset.setOnClickListener {
+                listener()
+            }
         }
     }
 

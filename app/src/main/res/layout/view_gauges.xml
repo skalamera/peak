@@ -59,6 +59,7 @@
                         android:id="@+id/tvPowerPillHp"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:paddingEnd="4dp"
                         android:text="-- HP"
                         android:textColor="@color/text_primary"
                         android:textSize="12sp"
@@ -79,6 +80,7 @@
                         android:id="@+id/tvPowerPillTq"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:paddingEnd="4dp"
                         android:text="-- LB-FT"
                         android:textColor="@color/accent_silver"
                         android:textSize="12sp"
@@ -94,34 +96,111 @@
             android:layout_weight="1"
             android:orientation="horizontal">
 
-            <com.cl600.obd.ui.AnalogGaugeView
-                android:id="@+id/gaugeBoost"
+            <FrameLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_marginEnd="6dp"
-                android:layout_weight="1" />
+                android:layout_weight="1">
 
-            <com.cl600.obd.ui.AnalogGaugeView
-                android:id="@+id/gaugeIat"
+                <com.cl600.obd.ui.AnalogGaugeView
+                    android:id="@+id/gaugeBoost"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true" />
+
+                <TextView
+                    android:id="@+id/btnResetBoostPeak"
+                    android:layout_width="wrap_content"
+                    android:layout_height="24dp"
+                    android:layout_gravity="bottom|end"
+                    android:layout_marginEnd="4dp"
+                    android:layout_marginBottom="4dp"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp"
+                    android:text="↺ PK"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
+
+            <FrameLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_weight="1" />
+                android:layout_weight="1">
+
+                <com.cl600.obd.ui.AnalogGaugeView
+                    android:id="@+id/gaugeIat"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true" />
+
+                <TextView
+                    android:id="@+id/btnResetIatPeak"
+                    android:layout_width="wrap_content"
+                    android:layout_height="24dp"
+                    android:layout_gravity="bottom|end"
+                    android:layout_marginEnd="4dp"
+                    android:layout_marginBottom="4dp"
+                    android:background="@drawable/bg_btn_secondary"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp"
+                    android:text="↺ PK"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center"
-            android:paddingTop="2dp">
+            android:orientation="horizontal"
+            android:paddingTop="4dp">
 
-            <ImageView
-                android:id="@+id/ivEurochargedLogo"
-                android:layout_width="190dp"
-                android:layout_height="48dp"
-                android:alpha="1.0"
-                android:contentDescription="Eurocharged"
-                android:scaleType="fitCenter"
-                android:src="@drawable/eurocharged_logo" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <ImageView
+                    android:id="@+id/ivCl600Badge"
+                    android:layout_width="145dp"
+                    android:layout_height="40dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="CL 600 V12 Biturbo"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/cl600_biturbo_badge" />
+            </FrameLayout>
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:background="#242428" />
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <ImageView
+                    android:id="@+id/ivEurochargedLogo"
+                    android:layout_width="148dp"
+                    android:layout_height="40dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="Eurocharged"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/eurocharged_logo" />
+            </FrameLayout>
         </LinearLayout>
     </LinearLayout>
 

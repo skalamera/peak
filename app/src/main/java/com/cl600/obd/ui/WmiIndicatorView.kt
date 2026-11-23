@@ -76,6 +76,10 @@ class WmiIndicatorView @JvmOverloads constructor(
 
     init {
         contentDescription = "WMI: OFF"
+        if (!isInEditMode) {
+            titlePaint.typeface = FontCache.racingBoldItalic(context)
+            statusPaint.typeface = FontCache.racingSemiBoldItalic(context)
+        }
     }
 
     fun setWmiState(state: WmiState) {

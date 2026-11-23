@@ -47,6 +47,8 @@ class AnalogGaugeView @JvmOverloads constructor(
     private var peakValue: Float? = null
     private var animatedNeedleValue: Float = 0f
     private var needleAnimator: ValueAnimator? = null
+    private var resetFlashAlpha: Float = 0f
+    private var flashAnimator: ValueAnimator? = null
 
     private val startAngleDeg = 145f
     private val sweepAngleDeg = 250f
@@ -128,11 +130,20 @@ class AnalogGaugeView @JvmOverloads constructor(
     }
 
     private val outerArchRect = RectF()
-
     private val arcRect = RectF()
     private val boxRect = RectF()
     private val needlePath = Path()
     private val peakPath = Path()
+
+    init {
+        if (!isInEditMode) {
+            val semi = FontCache.racingSemiBoldItalic(context)
+            val bold = FontCache.racingBoldItalic(context)
+            scaleLabelPaint.typeface = semi
+            subTextPaint.typeface = semi
+            digitalValuePaint.typeface = bold
+        }
+    }
 
     fun configure(
         title: String,
@@ -193,8 +204,21 @@ class AnalogGaugeView @JvmOverloads constructor(
         }
     }
 
+    fun flashReset() {
+        flashAnimator?.cancel()
+        flashAnimator = ValueAnimator.ofFloat(1f, 0f).apply {
+            duration = 280L
+            addUpdateListener { anim ->
+                resetFlashAlpha = anim.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
     override fun onDetachedFromWindow() {
         needleAnimator?.cancel()
+        flashAnimator?.cancel()
         super.onDetachedFromWindow()
     }
 
@@ -339,7 +363,14 @@ class AnalogGaugeView @JvmOverloads constructor(
         val boxTop = cy + radius * 0.30f
         val boxBottom = cy + radius * 0.87f
         boxRect.set(cx - boxHalfW, boxTop, cx + boxHalfW, boxBottom)
-        valueBoxBorderPaint.strokeWidth = (radius * 0.012f).coerceAtLeast(1f)
+        val baseBoxStroke = (radius * 0.012f).coerceAtLeast(1f)
+        if (resetFlashAlpha > 0.01f) {
+            valueBoxBorderPaint.color = Color.argb((80 + 175 * resetFlashAlpha).toInt().coerceIn(0, 255), 255, 255, 255)
+            valueBoxBorderPaint.strokeWidth = baseBoxStroke * (1f + resetFlashAlpha)
+        } else {
+            valueBoxBorderPaint.color = Color.parseColor("#202024")
+            valueBoxBorderPaint.strokeWidth = baseBoxStroke
+        }
         canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxPaint)
         canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
 

@@ -3,6 +3,7 @@ package com.cl600.obd.ui
 import android.graphics.Color
 import android.view.View
 import android.widget.TextView
+import android.widget.Toast
 import com.cl600.obd.R
 import com.cl600.obd.model.ConnectionState
 import com.cl600.obd.model.ObdTelemetry
@@ -24,6 +25,8 @@ class GaugesViewBinder(root: View) {
 
     private val gaugeBoost: AnalogGaugeView = root.findViewById(R.id.gaugeBoost)
     private val gaugeIat: AnalogGaugeView = root.findViewById(R.id.gaugeIat)
+    private val btnResetBoostPeak: View = root.findViewById(R.id.btnResetBoostPeak)
+    private val btnResetIatPeak: View = root.findViewById(R.id.btnResetIatPeak)
     private val wmiIndicator: WmiIndicatorView = root.findViewById(R.id.wmiIndicator)
     private val tvPowerPillHp: TextView = root.findViewById(R.id.tvPowerPillHp)
     private val tvPowerPillTq: TextView = root.findViewById(R.id.tvPowerPillTq)
@@ -39,9 +42,45 @@ class GaugesViewBinder(root: View) {
     private var lastState: ConnectionState = ConnectionState.Disconnected
 
     init {
+        val ctx = root.context
+        val racyBold = FontCache.racingBoldItalic(ctx)
+        tvPowerPillHp.typeface = racyBold
+        tvPowerPillTq.typeface = racyBold
+
+        val resetBoostAction: (View) -> Unit = {
+            ObdManager.resetBoostPeak()
+            gaugeBoost.flashReset()
+            Toast.makeText(ctx, "Boost peak reset", Toast.LENGTH_SHORT).show()
+        }
+        gaugeBoost.setOnClickListener(resetBoostAction)
+        btnResetBoostPeak.setOnClickListener(resetBoostAction)
+
+        val resetIatAction: (View) -> Unit = {
+            ObdManager.resetIatPeak()
+            gaugeIat.flashReset()
+            Toast.makeText(ctx, "IAT peak reset", Toast.LENGTH_SHORT).show()
+        }
+        gaugeIat.setOnClickListener(resetIatAction)
+        btnResetIatPeak.setOnClickListener(resetIatAction)
+
         cardCoolant.setHeader("COOLANT")
+        cardCoolant.setOnResetClickListener("↺ PK") {
+            ObdManager.resetCoolantPeak()
+            Toast.makeText(ctx, "Coolant peak reset", Toast.LENGTH_SHORT).show()
+        }
+
         cardVoltage.setHeader("VOLTAGE")
+        cardVoltage.setOnResetClickListener("↺ MIN") {
+            ObdManager.resetVoltageMin()
+            Toast.makeText(ctx, "Voltage min reset", Toast.LENGTH_SHORT).show()
+        }
+
         cardRpm.setHeader("ENGINE RPM")
+        cardRpm.setOnResetClickListener("↺ PK") {
+            ObdManager.resetRpmPeak()
+            Toast.makeText(ctx, "RPM peak reset", Toast.LENGTH_SHORT).show()
+        }
+
         cardExtra.setHeader(ExtraMetric.values()[extraMetricIndex].title, "TAP ↻")
 
         cardExtra.setOnClickListener {
@@ -163,9 +202,14 @@ class GaugesViewBinder(root: View) {
     private fun renderExtraCard(telemetry: ObdTelemetry, unitSystem: UnitSystem) {
         val metric = ExtraMetric.values()[extraMetricIndex]
         cardExtra.setHeader(metric.title, "TAP ↻")
+        val ctx = cardExtra.context
 
         when (metric) {
             ExtraMetric.POWER -> {
+                cardExtra.setOnResetClickListener("↺ PK") {
+                    ObdManager.resetPowerPeak()
+                    Toast.makeText(ctx, "Power peak reset", Toast.LENGTH_SHORT).show()
+                }
                 val hp = telemetry.estimatedHp
                 val tqUnit = if (unitSystem == UnitSystem.IMPERIAL) "lb-ft" else "Nm"
                 if (hp == null) {
@@ -181,6 +225,10 @@ class GaugesViewBinder(root: View) {
                 }
             }
             ExtraMetric.TORQUE -> {
+                cardExtra.setOnResetClickListener("↺ PK") {
+                    ObdManager.resetTorquePeak()
+                    Toast.makeText(ctx, "Torque peak reset", Toast.LENGTH_SHORT).show()
+                }
                 val tqLbFt = telemetry.estimatedTorqueLbFt
                 val tqUnit = if (unitSystem == UnitSystem.IMPERIAL) "LB-FT" else "Nm"
                 if (tqLbFt == null) {
@@ -195,6 +243,7 @@ class GaugesViewBinder(root: View) {
                 }
             }
             ExtraMetric.LOAD -> {
+                cardExtra.setOnResetClickListener(listener = null)
                 val load = telemetry.loadPercent
                 if (load == null) {
                     cardExtra.updateValue("--", "%", "CALC LOAD", 0f, DigitalGaugeCard.AlertLevel.INACTIVE)
@@ -204,6 +253,7 @@ class GaugesViewBinder(root: View) {
                 }
             }
             ExtraMetric.TIMING -> {
+                cardExtra.setOnResetClickListener(listener = null)
                 val adv = telemetry.timingAdvanceDeg
                 if (adv == null) {
                     cardExtra.updateValue("--", "°", "IGN TIMING", 0f, DigitalGaugeCard.AlertLevel.INACTIVE)
@@ -213,6 +263,7 @@ class GaugesViewBinder(root: View) {
                 }
             }
             ExtraMetric.THROTTLE -> {
+                cardExtra.setOnResetClickListener(listener = null)
                 val tps = telemetry.throttlePercent
                 if (tps == null) {
                     cardExtra.updateValue("--", "%", "THROTTLE", 0f, DigitalGaugeCard.AlertLevel.INACTIVE)
@@ -221,6 +272,7 @@ class GaugesViewBinder(root: View) {
                 }
             }
             ExtraMetric.SPEED -> {
+                cardExtra.setOnResetClickListener(listener = null)
                 val kmh = telemetry.speedKmh
                 val speedUnit = if (unitSystem == UnitSystem.IMPERIAL) "MPH" else "KM/H"
                 if (kmh == null) {
@@ -250,15 +302,15 @@ class GaugesViewBinder(root: View) {
                 title = "BOOST / VAC",
                 unit = "PSI",
                 minValue = -15f,
-                maxValue = 20f,
+                maxValue = 25f,
                 majorStep = 5f,
                 minorDivisions = 5,
                 zones = listOf(
                     AnalogGaugeView.GaugeZone(-15f, 0f, vacColor),
-                    AnalogGaugeView.GaugeZone(0f, 14f, boostColor),
-                    AnalogGaugeView.GaugeZone(14f, 20f, redColor)
+                    AnalogGaugeView.GaugeZone(0f, 20f, boostColor),
+                    AnalogGaugeView.GaugeZone(20f, 25f, redColor)
                 ),
-                warningThreshold = 15.5f,
+                warningThreshold = 20f,
                 decimalPlaces = 1,
                 showPlusSign = true,
                 subTextFormatter = { cur, peak ->
@@ -296,15 +348,15 @@ class GaugesViewBinder(root: View) {
                 title = "BOOST / VAC",
                 unit = "BAR",
                 minValue = -1.0f,
-                maxValue = 1.5f,
+                maxValue = 2.0f,
                 majorStep = 0.5f,
                 minorDivisions = 5,
                 zones = listOf(
                     AnalogGaugeView.GaugeZone(-1.0f, 0f, vacColor),
-                    AnalogGaugeView.GaugeZone(0f, 1.0f, boostColor),
-                    AnalogGaugeView.GaugeZone(1.0f, 1.5f, redColor)
+                    AnalogGaugeView.GaugeZone(0f, 1.38f, boostColor),
+                    AnalogGaugeView.GaugeZone(1.38f, 2.0f, redColor)
                 ),
-                warningThreshold = 1.1f,
+                warningThreshold = 1.38f,
                 decimalPlaces = 2,
                 showPlusSign = true,
                 subTextFormatter = { _, peak ->

@@ -304,7 +304,52 @@ object ObdManager {
             peakHp = cur.estimatedHp,
             peakTorqueLbFt = cur.estimatedTorqueLbFt
         )
-        appendLog(LogLevel.INFO, "Peak values reset")
+        appendLog(LogLevel.INFO, "All peak/min values reset")
+    }
+
+    fun resetBoostPeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(peakBoostPsi = cur.boostPsi)
+        appendLog(LogLevel.INFO, "Reset Boost peak")
+    }
+
+    fun resetIatPeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(peakIatCelsius = cur.iatCelsius)
+        appendLog(LogLevel.INFO, "Reset IAT peak")
+    }
+
+    fun resetCoolantPeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(peakCoolantCelsius = cur.coolantCelsius)
+        appendLog(LogLevel.INFO, "Reset Coolant peak")
+    }
+
+    fun resetVoltageMin() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(minVoltage = cur.voltage)
+        appendLog(LogLevel.INFO, "Reset Voltage min")
+    }
+
+    fun resetRpmPeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(peakRpm = cur.rpm)
+        appendLog(LogLevel.INFO, "Reset RPM peak")
+    }
+
+    fun resetPowerPeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(
+            peakHp = cur.estimatedHp,
+            peakTorqueLbFt = cur.estimatedTorqueLbFt
+        )
+        appendLog(LogLevel.INFO, "Reset Power peak")
+    }
+
+    fun resetTorquePeak() {
+        val cur = _telemetry.value
+        _telemetry.value = cur.copy(peakTorqueLbFt = cur.estimatedTorqueLbFt)
+        appendLog(LogLevel.INFO, "Reset Torque peak")
     }
 
     fun calibrateBaroFromCurrentMap(): Boolean {
