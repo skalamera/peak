@@ -13,6 +13,7 @@ import android.os.Build
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -20,6 +21,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -38,6 +40,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Controls the 3-state collapsible YouTube Music sidebar:
@@ -95,7 +98,8 @@ class MusicSidebarController(
 
     // WEB pane
     private val layoutWebPane: View = musicDrawerRoot.findViewById(R.id.layoutWebPane)
-    private val webViewYtm: WebView = musicDrawerRoot.findViewById(R.id.webViewYtm)
+    private val webViewHost: FrameLayout = musicDrawerRoot.findViewById(R.id.webViewHost)
+    private var webViewYtm: WebView? = null
     private val progressBarYtmWeb: ProgressBar = musicDrawerRoot.findViewById(R.id.progressBarYtmWeb)
     private val layoutWebAuthBanner: View = musicDrawerRoot.findViewById(R.id.layoutWebAuthBanner)
     private val btnBannerRetryHome: TextView = musicDrawerRoot.findViewById(R.id.btnBannerRetryHome)
@@ -119,25 +123,40 @@ class MusicSidebarController(
 
     private val density = activity.resources.displayMetrics.density
     private var drawerWidthPx = (364f * density).toInt()
+    private var lastAppliedCollapsedRtl: Boolean? = null
     private var sidebarState = loadSavedCollapsedState()
     private var lastCollapsedState = sidebarState
     private var musicMode = loadSavedMode()
+    private val lazyWebView = LazyWebViewInitializer<WebView>()
+    private val callbackGate = WebViewCallbackGate()
     private var webViewInitialized = false
     private var latestWebState = MusicState(mode = MusicMode.WEB)
     private var lastNotifiedTrackKey = ""
     private var bannerHideRunnable: Runnable? = null
     private var pollJob: Job? = null
+    private var capabilityRefreshJob: Job? = null
+    private var cachedYtmInstalled: Boolean = false
+    private var cachedNotifAccessEnabled: Boolean = false
 
     init {
         // Keep drawer off-screen synchronously before first frame draws
         musicDrawerRoot.visibility = View.VISIBLE
-        musicDrawerRoot.translationX = drawerWidthPx.toFloat()
+        musicDrawerRoot.translationX = collapsedDrawerTranslation()
         musicDrawerRoot.addOnLayoutChangeListener { v, left, _, right, _, _, _, _, _ ->
             val w = right - left
-            if (w > 0 && w != drawerWidthPx) {
+            val currentRtl = isRtlLayout()
+            if (DrawerLayoutGeometry.shouldReapplyCollapsedTranslation(
+                    prevWidthPx = drawerWidthPx,
+                    newWidthPx = w,
+                    prevRtl = lastAppliedCollapsedRtl,
+                    currentRtl = currentRtl
+                )
+            ) {
                 drawerWidthPx = w
                 if (sidebarState != SidebarState.EXPANDED) {
-                    v.translationX = w.toFloat()
+                    v.translationX = collapsedDrawerTranslation()
+                } else {
+                    lastAppliedCollapsedRtl = currentRtl
                 }
             }
         }
@@ -148,9 +167,12 @@ class MusicSidebarController(
         }
 
         bindClickListeners()
-        initWebViewIfSupported()
+        if (lazyWebView.shouldInitializeOnStart(musicMode)) {
+            initWebViewIfSupported()
+        }
         applyCollapsedStateImmediate(sidebarState)
         applyModeUi(loadInitialPage = (musicMode == MusicMode.WEB))
+        refreshCompanionCapabilitiesAsync()
         startObservers()
     }
 
@@ -167,18 +189,38 @@ class MusicSidebarController(
     }
 
     fun onResume() {
-        MediaNotificationListenerService.refreshFromContext(activity)
-        updateCompanionCardUi()
+        MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
+        refreshCompanionCapabilitiesAsync()
         renderMusicState(currentDisplayedState())
     }
 
     fun destroy() {
+        val wv = webViewYtm
+        webViewInitialized = false
+        webViewYtm = null
+        lazyWebView.reset()
+        capabilityRefreshJob?.cancel()
         pollJob?.cancel()
         bannerHideRunnable?.let { layoutNowPlayingBanner.removeCallbacks(it) }
+        bannerHideRunnable = null
+        layoutNowPlayingBanner.animate().cancel()
+        viewMusicScrim.animate().cancel()
+        musicDrawerRoot.animate().cancel()
         scope.cancel()
         try {
-            webViewYtm.stopLoading()
-            webViewYtm.destroy()
+            callbackGate.teardown(
+                stopLoading = { wv?.stopLoading() },
+                clearClients = {
+                    if (wv != null) {
+                        wv.webChromeClient = null
+                        wv.webViewClient = WebViewClient()
+                    }
+                },
+                removeFromParent = {
+                    (wv?.parent as? ViewGroup)?.removeView(wv)
+                },
+                destroyWebView = { wv?.destroy() }
+            )
         } catch (_: Exception) {
         }
     }
@@ -204,18 +246,21 @@ class MusicSidebarController(
         btnYtmReload.setOnClickListener {
             if (musicMode == MusicMode.WEB) {
                 layoutWebAuthBanner.visibility = View.GONE
+                callbackGate.onNavigationStarted()
                 if (!webViewInitialized) initWebViewIfSupported()
-                webViewYtm.loadUrl(YtmScriptBridge.YTM_HOME_URL)
+                webViewYtm?.loadUrl(YtmScriptBridge.YTM_HOME_URL)
             } else {
-                MediaNotificationListenerService.refreshFromContext(activity)
-                updateCompanionCardUi()
+                MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
+                refreshCompanionCapabilitiesAsync()
                 renderMusicState(currentDisplayedState())
             }
         }
 
         btnBannerRetryHome.setOnClickListener {
             layoutWebAuthBanner.visibility = View.GONE
-            webViewYtm.loadUrl(YtmScriptBridge.YTM_HOME_URL)
+            callbackGate.onNavigationStarted()
+            if (!webViewInitialized) initWebViewIfSupported()
+            webViewYtm?.loadUrl(YtmScriptBridge.YTM_HOME_URL)
         }
         btnBannerSwitchApp.setOnClickListener { switchMode(MusicMode.APP) }
 
@@ -248,78 +293,110 @@ class MusicSidebarController(
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun initWebViewIfSupported() {
-        if (webViewInitialized) return
-        try {
-            val settings = webViewYtm.settings
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.databaseEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.cacheMode = WebSettings.LOAD_DEFAULT
-            settings.userAgentString = YtmScriptBridge.sanitizeChromeUserAgent(settings.userAgentString)
+        if (callbackGate.destroyed || webViewInitialized) return
+        var createdView: WebView? = null
+        val initializedView = lazyWebView.ensureInitialized(
+            createAndConfigure = {
+                val webView = webViewYtm ?: WebView(activity).also { wv ->
+                    createdView = wv
+                    webViewHost.addView(
+                        wv,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                    webViewYtm = wv
+                }
+                val settings = webView.settings
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.databaseEnabled = true
+                settings.mediaPlaybackRequiresUserGesture = false
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.userAgentString =
+                    YtmScriptBridge.sanitizeChromeUserAgent(settings.userAgentString)
 
-            val cookieManager = CookieManager.getInstance()
-            cookieManager.setAcceptCookie(true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                cookieManager.setAcceptThirdPartyCookies(webViewYtm, true)
-            }
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.setAcceptCookie(true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    cookieManager.setAcceptThirdPartyCookies(webView, true)
+                }
 
-            webViewYtm.setBackgroundColor(Color.BLACK)
-            webViewYtm.webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (newProgress in 1..94) {
+                webView.setBackgroundColor(Color.BLACK)
+                webView.webChromeClient = object : WebChromeClient() {
+                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                        if (callbackGate.destroyed || view !== webViewYtm) return
+                        if (newProgress in 1..94) {
+                            progressBarYtmWeb.visibility = View.VISIBLE
+                        } else {
+                            progressBarYtmWeb.visibility = View.GONE
+                        }
+                    }
+                }
+                webView.webViewClient = object : WebViewClient() {
+                    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+                    override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                        return if (callbackGate.destroyed) true else handleWebNavigation(url)
+                    }
+
+                    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean {
+                        return if (callbackGate.destroyed) true
+                        else handleWebNavigation(request?.url?.toString())
+                    }
+
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        if (callbackGate.destroyed || view !== webViewYtm) return
+                        callbackGate.onNavigationStarted()
                         progressBarYtmWeb.visibility = View.VISIBLE
-                    } else {
+                        if (YtmScriptBridge.isGoogleWebViewAuthBlocked(url, null, null)) {
+                            layoutWebAuthBanner.visibility = View.VISIBLE
+                        }
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (callbackGate.destroyed || view !== webViewYtm) return
                         progressBarYtmWeb.visibility = View.GONE
+                        flushCookiesCompat()
+                        checkGoogleAuthBlock(view, url)
+                        pollWebViewOnce()
                     }
                 }
-            }
-            webViewYtm.webViewClient = object : WebViewClient() {
-                @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-                override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                    return handleWebNavigation(url)
-                }
-
-                @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-                    return handleWebNavigation(request?.url?.toString())
-                }
-
-                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    super.onPageStarted(view, url, favicon)
-                    progressBarYtmWeb.visibility = View.VISIBLE
-                    if (YtmScriptBridge.isGoogleWebViewAuthBlocked(url, null, null)) {
-                        layoutWebAuthBanner.visibility = View.VISIBLE
+                webView
+            },
+            onFailure = {
+                createdView?.let { partial ->
+                    try {
+                        webViewHost.removeView(partial)
+                        partial.destroy()
+                    } catch (_: Throwable) {
                     }
                 }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    progressBarYtmWeb.visibility = View.GONE
-                    flushCookiesCompat()
-                    checkGoogleAuthBlock(view, url)
-                    pollWebViewOnce()
-                }
+                webViewYtm = null
+                webViewInitialized = false
+                layoutWebAuthBanner.visibility = View.VISIBLE
             }
-            webViewInitialized = true
-        } catch (_: Throwable) {
-            webViewInitialized = false
-            layoutWebAuthBanner.visibility = View.VISIBLE
-        }
+        )
+        webViewInitialized = initializedView != null
     }
 
     private fun handleWebNavigation(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        return !(url.startsWith("http://") || url.startsWith("https://"))
+        return !YtmScriptBridge.isAllowedNavigationUrl(url)
     }
 
     private fun checkGoogleAuthBlock(view: WebView?, url: String?) {
-        if (view == null) return
+        if (view == null || callbackGate.destroyed || view !== webViewYtm) return
+        val gen = callbackGate.beginAuthCheck() ?: return
         val title = view.title
         if (YtmScriptBridge.isGoogleWebViewAuthBlocked(url, title, null)) {
             layoutWebAuthBanner.visibility = View.VISIBLE
@@ -328,6 +405,7 @@ class MusicSidebarController(
         view.evaluateJavascript(
             "(document.body && document.body.innerText) ? document.body.innerText.slice(0, 600) : ''"
         ) { raw ->
+            if (!callbackGate.isAuthCheckCurrent(gen) || view !== webViewYtm) return@evaluateJavascript
             val snippet = raw?.removeSurrounding("\"")
                 ?.replace("\\n", " ")
                 ?.replace("\\\"", "\"")
@@ -339,11 +417,14 @@ class MusicSidebarController(
     private fun startObservers() {
         scope.launch {
             MediaNotificationListenerService.appState.collect { appMusicState ->
-                if (musicMode == MusicMode.APP ||
-                    (musicMode == MusicMode.WEB && !latestWebState.hasActiveSession && appMusicState != null)
+                if (MusicPollLoopPolicy.shouldCollectNativeUpdate(
+                        mode = musicMode,
+                        webHasActiveSession = latestWebState.hasActiveSession,
+                        appStatePresent = appMusicState != null
+                    )
                 ) {
                     renderMusicState(currentDisplayedState())
-                    updateCompanionCardUi()
+                    updateCompanionSessionStatusOnly()
                 }
             }
         }
@@ -352,9 +433,15 @@ class MusicSidebarController(
             while (isActive) {
                 if (musicMode == MusicMode.WEB && webViewInitialized) {
                     pollWebViewOnce()
-                } else if (musicMode == MusicMode.APP) {
-                    MediaNotificationListenerService.refreshFromContext(activity)
-                    renderMusicState(currentDisplayedState())
+                }
+                if (MusicPollLoopPolicy.shouldRefreshNativeOnPollTick(
+                        mode = musicMode,
+                        webHasActiveSession = latestWebState.hasActiveSession
+                    )
+                ) {
+                    withContext(Dispatchers.IO) {
+                        MediaNotificationListenerService.refreshFromContext(activity.applicationContext)
+                    }
                 }
                 val activePlaying = currentDisplayedState().isPlaying ||
                     sidebarState == SidebarState.EXPANDED
@@ -364,9 +451,23 @@ class MusicSidebarController(
     }
 
     private fun pollWebViewOnce() {
-        if (!webViewInitialized) return
+        val wv = webViewYtm ?: return
+        if (callbackGate.destroyed || !webViewInitialized) return
+        if (!YtmScriptBridge.isYtmPlayerUrl(wv.url)) {
+            if (latestWebState.hasActiveSession) {
+                latestWebState = MusicState(mode = MusicMode.WEB)
+                if (musicMode == MusicMode.WEB) {
+                    renderMusicState(currentDisplayedState())
+                }
+            }
+            return
+        }
+        val gen = callbackGate.captureWebCallbackGeneration() ?: return
         try {
-            webViewYtm.evaluateJavascript(YtmScriptBridge.buildStatePollingJs()) { raw ->
+            wv.evaluateJavascript(YtmScriptBridge.buildStatePollingJs()) { raw ->
+                if (!callbackGate.isWebCallbackCurrent(gen) || wv !== webViewYtm) {
+                    return@evaluateJavascript
+                }
                 val parsed = YtmScriptBridge.parseTrackPayload(raw, MusicMode.WEB)
                 if (parsed != null) {
                     latestWebState = parsed
@@ -379,28 +480,31 @@ class MusicSidebarController(
         }
     }
 
-    private fun currentDisplayedState(): MusicState {
-        val appState = MediaNotificationListenerService.appState.value
-        return when (musicMode) {
-            MusicMode.WEB -> {
-                if (latestWebState.hasActiveSession || appState == null) {
-                    latestWebState
-                } else {
-                    appState.copy(mode = MusicMode.WEB)
-                }
-            }
-            MusicMode.APP -> appState ?: MusicState(mode = MusicMode.APP)
-        }
+    private fun currentDisplayedPlayback(): DisplayedPlayback {
+        val wv = webViewYtm
+        val webReady = webViewInitialized && wv != null && YtmScriptBridge.isYtmPlayerUrl(wv.url)
+        return MusicPlaybackRouter.resolve(
+            mode = musicMode,
+            webState = latestWebState,
+            appState = MediaNotificationListenerService.appState.value,
+            webViewReadyForPlayer = webReady
+        )
     }
+
+    private fun currentDisplayedState(): MusicState =
+        currentDisplayedPlayback().state
 
     private fun switchMode(target: MusicMode) {
         if (musicMode == target) return
         musicMode = target
         prefs.edit().putString(KEY_MODE, target.name).apply()
-        applyModeUi(loadInitialPage = (target == MusicMode.WEB && webViewYtm.url.isNullOrBlank()))
+        if (target == MusicMode.WEB && !webViewInitialized) {
+            initWebViewIfSupported()
+        }
+        applyModeUi(loadInitialPage = (target == MusicMode.WEB && webViewYtm?.url.isNullOrBlank()))
         if (target == MusicMode.APP) {
-            MediaNotificationListenerService.refreshFromContext(activity)
-            updateCompanionCardUi()
+            MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
+            refreshCompanionCapabilitiesAsync()
         } else {
             pollWebViewOnce()
         }
@@ -427,18 +531,29 @@ class MusicSidebarController(
         layoutWebPane.visibility = if (isWeb) View.VISIBLE else View.GONE
         layoutAppPane.visibility = if (isWeb) View.GONE else View.VISIBLE
 
-        if (isWeb && loadInitialPage && webViewInitialized && webViewYtm.url.isNullOrBlank()) {
-            webViewYtm.loadUrl(YtmScriptBridge.YTM_HOME_URL)
+        if (isWeb && loadInitialPage && webViewInitialized && webViewYtm?.url.isNullOrBlank()) {
+            webViewYtm?.loadUrl(YtmScriptBridge.YTM_HOME_URL)
         }
-        updateCompanionCardUi()
+        updateCompanionCardUiFromCache()
     }
 
     private fun performMusicAction(action: MusicAction) {
-        if (musicMode == MusicMode.WEB && webViewInitialized) {
-            webViewYtm.evaluateJavascript(YtmScriptBridge.buildActionJs(action)) { res ->
+        if (callbackGate.destroyed) return
+        val displayed = currentDisplayedPlayback()
+        val wv = webViewYtm
+        if (displayed.target == CommandTarget.WEB &&
+            webViewInitialized &&
+            wv != null &&
+            YtmScriptBridge.isYtmPlayerUrl(wv.url)
+        ) {
+            val gen = callbackGate.captureWebCallbackGeneration() ?: return
+            wv.evaluateJavascript(YtmScriptBridge.buildActionJs(action)) { res ->
+                if (!callbackGate.isWebCallbackCurrent(gen) || wv !== webViewYtm) {
+                    return@evaluateJavascript
+                }
                 val handled = res?.trim() == "true"
                 if (!handled) {
-                    handleFallbackCompanionAction(action)
+                    handleFallbackCompanionAction(action, displayed.state)
                 } else {
                     // Immediate re-poll after DOM state settles
                     scope.launch {
@@ -449,12 +564,25 @@ class MusicSidebarController(
             }
             return
         }
-        handleFallbackCompanionAction(action)
+        handleFallbackCompanionAction(action, displayed.state)
     }
 
-    private fun handleFallbackCompanionAction(action: MusicAction) {
-        if (MediaNotificationListenerService.sendAction(activity, action)) {
-            renderMusicState(currentDisplayedState())
+    private fun handleFallbackCompanionAction(
+        action: MusicAction,
+        expectedState: MusicState? = null
+    ) {
+        if (MediaNotificationListenerService.sendAction(
+                context = activity.applicationContext,
+                action = action,
+                expectedState = expectedState
+            )
+        ) {
+            return
+        }
+        // If command was bound to a specific rendered MediaSession token that vanished/changed,
+        // refresh instead of firing a stray unbound media key to another app.
+        if (expectedState?.sessionToken != null) {
+            MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
             return
         }
         when (action) {
@@ -478,7 +606,9 @@ class MusicSidebarController(
         mgr.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         scope.launch {
             delay(250L)
-            MediaNotificationListenerService.refreshFromContext(activity)
+            withContext(Dispatchers.IO) {
+                MediaNotificationListenerService.refreshFromContext(activity.applicationContext)
+            }
             renderMusicState(currentDisplayedState())
         }
     }
@@ -499,7 +629,7 @@ class MusicSidebarController(
             if (musicMode == MusicMode.WEB) {
                 if (state.signedIn) "Ready • Tap Expand to browse" else "Tap YT icon to sign in"
             } else {
-                if (MediaNotificationListenerService.isNotificationAccessEnabled(activity)) {
+                if (cachedNotifAccessEnabled) {
                     "Waiting for playback"
                 } else {
                     "Press Play or grant Track Sync"
@@ -564,11 +694,13 @@ class MusicSidebarController(
         tvBannerTitle.text = title
         tvBannerArtist.text = artist.ifBlank { "YouTube Music" }
 
+        val rtl = isRtlLayout()
         bannerHideRunnable?.let { layoutNowPlayingBanner.removeCallbacks(it) }
         layoutNowPlayingBanner.animate().cancel()
         layoutNowPlayingBanner.visibility = View.VISIBLE
         layoutNowPlayingBanner.alpha = 0f
-        layoutNowPlayingBanner.translationX = 24f * density
+        layoutNowPlayingBanner.translationX =
+            DrawerLayoutGeometry.bannerSlideOffsetX(24f * density, rtl)
         layoutNowPlayingBanner.animate()
             .alpha(1f)
             .translationX(0f)
@@ -577,12 +709,15 @@ class MusicSidebarController(
             .start()
 
         val hideTask = Runnable {
+            if (callbackGate.destroyed) return@Runnable
             layoutNowPlayingBanner.animate()
                 .alpha(0f)
-                .translationX(16f * density)
+                .translationX(DrawerLayoutGeometry.bannerSlideOffsetX(16f * density, isRtlLayout()))
                 .setDuration(240L)
                 .withEndAction {
-                    layoutNowPlayingBanner.visibility = View.GONE
+                    if (!callbackGate.destroyed) {
+                        layoutNowPlayingBanner.visibility = View.GONE
+                    }
                 }
                 .start()
         }
@@ -590,23 +725,47 @@ class MusicSidebarController(
         layoutNowPlayingBanner.postDelayed(hideTask, 3800L)
     }
 
-    private fun updateCompanionCardUi() {
-        val ytmInstalled = activity.packageManager
-            .getLaunchIntentForPackage(MediaNotificationListenerService.YTM_PACKAGE) != null
-        btnOpenYtmApp.text = if (ytmInstalled) {
-            "OPEN YOUTUBE MUSIC APP"
-        } else {
-            "GET YOUTUBE MUSIC ON PLAY STORE"
+    private fun refreshCompanionCapabilitiesAsync() {
+        if (callbackGate.destroyed) return
+        val appCtx = activity.applicationContext
+        capabilityRefreshJob?.cancel()
+        capabilityRefreshJob = scope.launch {
+            val (installed, notifGranted) = withContext(Dispatchers.IO) {
+                val ytm = runCatching {
+                    appCtx.packageManager
+                        .getLaunchIntentForPackage(MediaNotificationListenerService.YTM_PACKAGE) != null
+                }.getOrDefault(false)
+                val access = runCatching {
+                    MediaNotificationListenerService.isNotificationAccessEnabled(appCtx)
+                }.getOrDefault(false)
+                ytm to access
+            }
+            if (callbackGate.destroyed) return@launch
+            cachedYtmInstalled = installed
+            cachedNotifAccessEnabled = notifGranted
+            updateCompanionCardUiFromCache()
+            renderMusicState(currentDisplayedState())
         }
+    }
 
-        val notifGranted = MediaNotificationListenerService.isNotificationAccessEnabled(activity)
+    private fun updateCompanionSessionStatusOnly() {
+        val notifGranted = cachedNotifAccessEnabled
         val active = MediaNotificationListenerService.appState.value?.hasActiveSession == true
         tvAppSessionStatus.text = when {
             active && notifGranted -> "COMPANION SYNC ACTIVE"
             notifGranted -> "TRACK & RATING SYNC READY"
             else -> "MEDIA KEYS READY • TRACK SYNC OPTIONAL"
         }
-        if (notifGranted) {
+    }
+
+    private fun updateCompanionCardUiFromCache() {
+        btnOpenYtmApp.text = if (cachedYtmInstalled) {
+            "OPEN YOUTUBE MUSIC APP"
+        } else {
+            "GET YOUTUBE MUSIC ON PLAY STORE"
+        }
+        updateCompanionSessionStatusOnly()
+        if (cachedNotifAccessEnabled) {
             tvNotifAccessDesc.text =
                 "✓ Track metadata, progress bar, and Like/Dislike thumbs synced with active media session."
             btnGrantNotifAccess.text = "NOTIFICATION SYNC ENABLED"
@@ -663,12 +822,27 @@ class MusicSidebarController(
         }
     }
 
+    private fun isRtlLayout(): Boolean {
+        val dir = if (rootView.isLaidOut) {
+            rootView.layoutDirection
+        } else {
+            activity.resources.configuration.layoutDirection
+        }
+        return dir == View.LAYOUT_DIRECTION_RTL
+    }
+
+    private fun collapsedDrawerTranslation(): Float {
+        val rtl = isRtlLayout()
+        lastAppliedCollapsedRtl = rtl
+        return DrawerLayoutGeometry.collapsedTranslationX(drawerWidthPx, rtl)
+    }
+
     private fun applyCollapsedStateImmediate(state: SidebarState) {
         layoutMusicRail.visibility = if (state == SidebarState.RAIL) View.VISIBLE else View.GONE
         btnMusicPeekTab.visibility = if (state == SidebarState.PEEK) View.VISIBLE else View.GONE
         viewMusicScrim.visibility = View.GONE
         viewMusicScrim.alpha = 0f
-        musicDrawerRoot.translationX = drawerWidthPx.toFloat()
+        musicDrawerRoot.translationX = collapsedDrawerTranslation()
         onDrawerStateChanged(false)
     }
 
@@ -694,8 +868,11 @@ class MusicSidebarController(
                     viewMusicScrim.alpha = 1f
                     musicDrawerRoot.translationX = 0f
                 }
-                if (musicMode == MusicMode.WEB && webViewInitialized && webViewYtm.url.isNullOrBlank()) {
-                    webViewYtm.loadUrl(YtmScriptBridge.YTM_HOME_URL)
+                if (musicMode == MusicMode.WEB) {
+                    if (!webViewInitialized) initWebViewIfSupported()
+                    if (webViewInitialized && webViewYtm?.url.isNullOrBlank()) {
+                        webViewYtm?.loadUrl(YtmScriptBridge.YTM_HOME_URL)
+                    }
                 }
                 onDrawerStateChanged(true)
             }
@@ -713,7 +890,7 @@ class MusicSidebarController(
                         .start()
                     musicDrawerRoot.animate().cancel()
                     musicDrawerRoot.animate()
-                        .translationX(drawerWidthPx.toFloat())
+                        .translationX(collapsedDrawerTranslation())
                         .setDuration(220L)
                         .setInterpolator(DecelerateInterpolator())
                         .start()

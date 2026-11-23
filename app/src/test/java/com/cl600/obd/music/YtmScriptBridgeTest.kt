@@ -112,4 +112,50 @@ class YtmScriptBridgeTest {
             )
         )
     }
+
+    @Test
+    fun crit73_playerScriptsRequireExactYtmOriginAndEnabledPlayerBar() {
+        val pollJs = YtmScriptBridge.buildStatePollingJs()
+        assertTrue(
+            "Polling script must reject non-YTM origins before touching DOM",
+            pollJs.contains("window.location.origin !== 'https://music.youtube.com'")
+        )
+
+        MusicAction.values().forEach { action ->
+            val actionJs = YtmScriptBridge.buildActionJs(action)
+            assertTrue(
+                "Action script for $action must enforce exact YTM origin",
+                actionJs.contains("window.location.origin !== 'https://music.youtube.com'")
+            )
+            assertFalse(
+                "Action script for $action must not fall back to document",
+                actionJs.contains("|| document")
+            )
+            assertTrue(
+                "Action script for $action must check disabled / aria-disabled",
+                actionJs.contains("disabled") && actionJs.contains("aria-disabled")
+            )
+        }
+    }
+
+    @Test
+    fun crit73_navigationAllowlistAndPlayerOriginUrlChecks() {
+        assertTrue(YtmScriptBridge.isAllowedNavigationUrl("https://music.youtube.com/"))
+        assertTrue(YtmScriptBridge.isAllowedNavigationUrl("https://accounts.google.com/v3/signin"))
+        assertTrue(YtmScriptBridge.isAllowedNavigationUrl("https://accounts.youtube.com/AccountsSetSID"))
+        assertTrue(YtmScriptBridge.isAllowedNavigationUrl("https://consent.google.com/ml?continue=x"))
+        assertTrue(YtmScriptBridge.isAllowedNavigationUrl("https://sub.youtube.com/watch"))
+
+        assertFalse("Cleartext HTTP must be blocked", YtmScriptBridge.isAllowedNavigationUrl("http://music.youtube.com/"))
+        assertFalse("Arbitrary external host must be blocked", YtmScriptBridge.isAllowedNavigationUrl("https://evil.example.com/login"))
+        assertFalse("Suffix spoof host must be blocked", YtmScriptBridge.isAllowedNavigationUrl("https://music.youtube.com.evil.com/"))
+        assertFalse("Userinfo spoof must be blocked", YtmScriptBridge.isAllowedNavigationUrl("https://music.youtube.com@evil.com/"))
+        assertFalse("Custom scheme must be blocked", YtmScriptBridge.isAllowedNavigationUrl("intent://watch#Intent;end"))
+        assertFalse("File scheme must be blocked", YtmScriptBridge.isAllowedNavigationUrl("file:///etc/hosts"))
+
+        assertTrue(YtmScriptBridge.isYtmPlayerUrl("https://music.youtube.com/watch?v=123"))
+        assertFalse("Google sign-in is allowed nav but NOT YTM player origin", YtmScriptBridge.isYtmPlayerUrl("https://accounts.google.com/v3/signin"))
+        assertFalse("Main youtube.com is NOT music.youtube.com player origin", YtmScriptBridge.isYtmPlayerUrl("https://www.youtube.com/"))
+        assertFalse("Cleartext YTM is NOT player origin", YtmScriptBridge.isYtmPlayerUrl("http://music.youtube.com/"))
+    }
 }

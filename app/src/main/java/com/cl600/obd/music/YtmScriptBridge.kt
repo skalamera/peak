@@ -28,7 +28,9 @@ data class MusicState(
     val durationSec: Float = 0f,
     val mode: MusicMode = MusicMode.WEB,
     val signedIn: Boolean = false,
-    val hasActiveSession: Boolean = false
+    val hasActiveSession: Boolean = false,
+    val sessionPackage: String? = null,
+    val sessionToken: Any? = null
 ) {
     fun progressFraction(): Float =
         if (durationSec > 0.5f) (currentSec / durationSec).coerceIn(0f, 1f) else 0f
@@ -41,6 +43,17 @@ data class MusicState(
 object YtmScriptBridge {
 
     const val YTM_HOME_URL = "https://music.youtube.com/"
+    private const val YTM_HOST = "music.youtube.com"
+    private val ALLOWED_NAV_HOST_SUFFIXES = listOf(
+        "music.youtube.com",
+        "youtube.com",
+        "accounts.google.com",
+        "accounts.youtube.com",
+        "consent.youtube.com",
+        "consent.google.com",
+        "myaccount.google.com",
+        "g.co"
+    )
     private const val FALLBACK_CHROME_UA =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
@@ -49,6 +62,29 @@ object YtmScriptBridge {
     private val MULTI_SPACE_REGEX = Regex(""" {2,}""")
     private val PAREN_SEMI_REGEX = Regex("""\(\s*;\s*""")
     private val SEMI_PAREN_REGEX = Regex("""\s*;\s*\)""")
+
+    fun isAllowedNavigationUrl(url: String?): Boolean {
+        val uri = parseSafeHttpsUri(url) ?: return false
+        val host = uri.host?.lowercase() ?: return false
+        return ALLOWED_NAV_HOST_SUFFIXES.any { allowed ->
+            host == allowed || host.endsWith(".$allowed")
+        }
+    }
+
+    fun isYtmPlayerUrl(url: String?): Boolean {
+        val uri = parseSafeHttpsUri(url) ?: return false
+        return uri.host?.lowercase() == YTM_HOST
+    }
+
+    private fun parseSafeHttpsUri(url: String?): java.net.URI? {
+        if (url.isNullOrBlank()) return null
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true)) return null
+        if (uri.userInfo != null) return null
+        if (uri.port != -1 && uri.port != 443) return null
+        if (uri.host.isNullOrBlank()) return null
+        return uri
+    }
 
     fun sanitizeChromeUserAgent(defaultUa: String): String {
         if (defaultUa.isBlank()) return FALLBACK_CHROME_UA
@@ -87,6 +123,7 @@ object YtmScriptBridge {
     fun buildStatePollingJs(): String = """
         (function() {
             try {
+                if (window.location.origin !== 'https://music.youtube.com') return '';
                 var bar = document.querySelector('ytmusic-player-bar');
                 var titleEl = bar ? bar.querySelector('.title.ytmusic-player-bar, yt-formatted-string.title') : null;
                 var bylineEl = bar ? bar.querySelector('.byline.ytmusic-player-bar, yt-formatted-string.byline, .subtitle.ytmusic-player-bar') : null;
@@ -158,9 +195,11 @@ object YtmScriptBridge {
         }
         return """
             (function() {
-                var root = document.querySelector('ytmusic-player-bar') || document;
-                var btn = root.querySelector('$selector') || document.querySelector('$selector');
-                if (btn) {
+                if (window.location.origin !== 'https://music.youtube.com') return false;
+                var root = document.querySelector('ytmusic-player-bar');
+                if (!root) return false;
+                var btn = root.querySelector('$selector');
+                if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
                     btn.click();
                     return true;
                 }
