@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_root"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <!-- Log Toolbar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnClearLog"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_btn_secondary"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:text="CLEAR"
+            android:textColor="@color/text_primary"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnCopyLog"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_btn_secondary"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:text="COPY LOG"
+            android:textColor="@color/accent_cyan"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <CheckBox
+            android:id="@+id/cbVerbosePoll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="Verbose Polls"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <CheckBox
+            android:id="@+id/cbAutoScroll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:checked="true"
+            android:text="Auto-scroll"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Monospace Log Output -->
+    <ScrollView
+        android:id="@+id/svLog"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
+        android:background="@drawable/bg_input_box"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/tvLogOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text_primary"
+            android:textIsSelectable="true"
+            android:textSize="12sp"
+            android:typeface="monospace" />
+    </ScrollView>
+
+    <!-- Quick Test Commands -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnCmdAtz"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="ATZ"
+                android:textColor="@color/accent_amber"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+
+            <Button
+                android:id="@+id/btnCmdAtrv"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="ATRV"
+                android:textColor="@color/accent_amber"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+
+            <Button
+                android:id="@+id/btnCmdAtdp"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="ATDP"
+                android:textColor="@color/accent_amber"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+
+            <Button
+                android:id="@+id/btnCmd0100"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="0100"
+                android:textColor="@color/accent_cyan"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+
+            <Button
+                android:id="@+id/btnCmd010b"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="010B"
+                android:textColor="@color/accent_cyan"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+
+            <Button
+                android:id="@+id/btnCmd03"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:background="@drawable/bg_btn_secondary"
+                android:minWidth="56dp"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:text="03"
+                android:textColor="@color/accent_cyan"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Manual Command Entry -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etRawCmd"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_input_box"
+            android:hint="Enter AT or OBD hex command (e.g. ATDP, 010C)"
+            android:imeOptions="actionSend"
+            android:inputType="textCapCharacters"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:singleLine="true"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_muted"
+            android:textSize="13sp"
+            android:typeface="monospace" />
+
+        <Button
+            android:id="@+id/btnSendCmd"
+            android:layout_width="wrap_content"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_btn_primary"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:text="SEND"
+            android:textColor="#0A0C10"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</LinearLayout>

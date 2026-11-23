@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CL600 OBD</string>
+    <string name="brand_title">CL600 V12</string>
+    <string name="tab_gauges">GAUGES</string>
+    <string name="tab_codes">CODES</string>
+    <string name="tab_connect">CONNECT</string>
+    <string name="tab_log">LOG</string>
+    <string name="disconnected">DISCONNECTED</string>
+    <string name="demo_mode">DEMO V12</string>
+    <string name="scan_codes">SCAN CODES</string>
+    <string name="clear_codes">CLEAR CODES</string>
+    <string name="connect_btn">CONNECT</string>
+    <string name="disconnect_btn">DISCONNECT</string>
+    <string name="try_demo_btn">TRY DEMO MODE</string>
+    <string name="reset_peaks">RST PK</string>
+</resources>
