@@ -20,9 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Companion NotificationListener + MediaSession bridge for controlling the native
@@ -33,17 +31,20 @@ class MediaNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
-        listenerConnected = true
+        stateStore.onConnected()
         requestRefreshAsync(applicationContext)
     }
 
     override fun onListenerDisconnected() {
-        listenerConnected = false
-        postCommandCoordinator.cancelPending()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            Api21Helper.clearObservedController()
-        }
-        emitAppState(null)
+        stateStore.onDisconnected(
+            cancelPendingVerification = { postCommandCoordinator.cancelPending() },
+            clearObserver = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    Api21Helper.clearObservedController()
+                }
+            },
+            onSessionChanged = { postCommandCoordinator.onStateEmitted() }
+        )
         super.onListenerDisconnected()
     }
 
@@ -85,9 +86,6 @@ class MediaNotificationListenerService : NotificationListenerService() {
         ): Boolean = packageName == YTM_PACKAGE || hasMediaSessionExtra || isTransportCategory
 
         @Volatile
-        private var listenerConnected = false
-
-        @Volatile
         private var refreshContext: Context? = null
 
         private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -98,21 +96,8 @@ class MediaNotificationListenerService : NotificationListenerService() {
         }
 
         private val postCommandCoordinator = PostCommandRefreshCoordinator()
-
-        private val _appState = MutableStateFlow<MusicState?>(null)
-        val appState: StateFlow<MusicState?> = _appState.asStateFlow()
-
-        private fun emitAppState(state: MusicState?) {
-            val prev = _appState.value
-            _appState.value = state
-            val sessionChanged = prev?.sessionToken != state?.sessionToken ||
-                prev?.isPlaying != state?.isPlaying ||
-                prev?.title != state?.title ||
-                prev?.likeStatus != state?.likeStatus
-            if (sessionChanged) {
-                postCommandCoordinator.onStateEmitted()
-            }
-        }
+        private val stateStore = NativeSessionStateStore()
+        val appState: StateFlow<MusicState?> = stateStore.appState
 
         fun requestRefreshAsync(context: Context): Job {
             refreshContext = context.applicationContext
@@ -149,17 +134,37 @@ class MediaNotificationListenerService : NotificationListenerService() {
             )
         }
 
-        fun refreshFromContext(context: Context) {
+        private fun refreshFromContext(context: Context) {
+            val epoch = stateStore.captureEpoch()
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-                emitAppState(null)
+                stateStore.publishIfCurrent(epoch, null) {
+                    postCommandCoordinator.onStateEmitted()
+                }
                 return
             }
-            if (!isNotificationAccessEnabled(context) && !listenerConnected) {
+            if (!isNotificationAccessEnabled(context) && !stateStore.isListenerConnected) {
+                if (stateStore.publishIfCurrent(epoch, null) { postCommandCoordinator.onStateEmitted() }) {
+                    Api21Helper.clearObservedController()
+                }
+                return
+            }
+            val polled = Api21Helper.readStateWithoutObserving(context)
+            val published = stateStore.publishIfCurrent(epoch, polled?.second) {
+                postCommandCoordinator.onStateEmitted()
+            }
+            if (!published) {
+                // Disconnected while Binder read was in flight: do not publish or register callback.
+                return
+            }
+            if (polled == null) {
                 Api21Helper.clearObservedController()
-                emitAppState(null)
-                return
+            } else {
+                Api21Helper.ensureObservedController(
+                    appContext = context.applicationContext,
+                    controller = polled.first,
+                    isEpochStillCurrent = { stateStore.isEpochCurrent(epoch) }
+                )
             }
-            emitAppState(Api21Helper.pollState(context))
         }
 
         fun sendAction(
@@ -168,7 +173,7 @@ class MediaNotificationListenerService : NotificationListenerService() {
             expectedState: MusicState? = null
         ): Boolean {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
-            if (!isNotificationAccessEnabled(context) && !listenerConnected) return false
+            if (!isNotificationAccessEnabled(context) && !stateStore.isListenerConnected) return false
             val appCtx = context.applicationContext
             val handled = Api21Helper.sendAction(appCtx, action, expectedState)
             if (handled) {
@@ -177,7 +182,7 @@ class MediaNotificationListenerService : NotificationListenerService() {
                     ioDispatcher = Dispatchers.IO,
                     graceMs = 250L
                 ) {
-                    refreshFromContext(appCtx)
+                    requestRefreshAsync(appCtx).join()
                 }
             }
             return handled
@@ -192,26 +197,32 @@ class MediaNotificationListenerService : NotificationListenerService() {
 
             fun clearObservedController() {
                 synchronized(callbackLock) {
-                    val prev = observedController
-                    val cb = observedCallback
-                    if (prev != null && cb != null) {
-                        try {
-                            prev.unregisterCallback(cb)
-                        } catch (_: Exception) {
-                        }
-                    }
-                    observedController = null
-                    observedCallback = null
+                    clearObservedControllerLocked()
                 }
             }
 
-            private fun ensureObservedController(
+            private fun clearObservedControllerLocked() {
+                val prev = observedController
+                val cb = observedCallback
+                if (prev != null && cb != null) {
+                    try {
+                        prev.unregisterCallback(cb)
+                    } catch (_: Exception) {
+                    }
+                }
+                observedController = null
+                observedCallback = null
+            }
+
+            fun ensureObservedController(
                 appContext: Context,
-                controller: MediaController
+                controller: MediaController,
+                isEpochStillCurrent: () -> Boolean
             ) {
                 synchronized(callbackLock) {
+                    if (!isEpochStillCurrent()) return
                     if (observedController?.sessionToken == controller.sessionToken) return
-                    clearObservedController()
+                    clearObservedControllerLocked()
                     val cb = object : MediaController.Callback() {
                         override fun onPlaybackStateChanged(state: PlaybackState?) {
                             requestRefreshAsync(appContext)
@@ -228,6 +239,10 @@ class MediaNotificationListenerService : NotificationListenerService() {
                     }
                     try {
                         controller.registerCallback(cb, mainHandler)
+                        if (!isEpochStillCurrent()) {
+                            controller.unregisterCallback(cb)
+                            return
+                        }
                         observedController = controller
                         observedCallback = cb
                     } catch (_: Exception) {
@@ -235,17 +250,12 @@ class MediaNotificationListenerService : NotificationListenerService() {
                 }
             }
 
-            fun pollState(context: Context): MusicState? {
+            fun readStateWithoutObserving(context: Context): Pair<MediaController, MusicState>? {
                 val selected = NativeSessionSelector.selectPreferred(
                     candidates = listCandidates(context),
                     ytmPackage = YTM_PACKAGE
-                )
-                if (selected == null) {
-                    clearObservedController()
-                    return null
-                }
+                ) ?: return null
                 val controller = selected.handle
-                ensureObservedController(context.applicationContext, controller)
                 val meta = controller.metadata
                 val playback = controller.playbackState
 
@@ -276,7 +286,7 @@ class MediaNotificationListenerService : NotificationListenerService() {
 
                 val likeStatus = extractLikeStatus(meta?.getRating(MediaMetadata.METADATA_KEY_USER_RATING))
 
-                return MusicState(
+                val musicState = MusicState(
                     title = title.trim(),
                     artist = artist.trim(),
                     isPlaying = isPlaying,
@@ -289,6 +299,7 @@ class MediaNotificationListenerService : NotificationListenerService() {
                     sessionPackage = controller.packageName,
                     sessionToken = controller.sessionToken
                 )
+                return controller to musicState
             }
 
             fun sendAction(

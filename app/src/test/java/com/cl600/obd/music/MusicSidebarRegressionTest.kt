@@ -535,4 +535,366 @@ class MusicSidebarRegressionTest {
             )
         )
     }
+
+    @Test
+    fun crit80_tokenlessWebStateNeverDrivesNativeSessionCommand() {
+        val nativeSpotify = SessionCandidate(
+            handle = "spotify-ctrl",
+            packageName = "com.spotify.music",
+            token = "token-spotify-1",
+            isPlaying = true,
+            isPaused = false,
+            likeStatus = LikeStatus.LIKED
+        )
+        val tokenlessWebState = MusicState(
+            title = "Web Track",
+            artist = "Web Artist",
+            isPlaying = false,
+            likeStatus = LikeStatus.NONE,
+            mode = MusicMode.WEB,
+            hasActiveSession = true,
+            sessionToken = null
+        )
+
+        listOf(MusicAction.LIKE, MusicAction.DISLIKE, MusicAction.PLAY_PAUSE, MusicAction.NEXT).forEach { action ->
+            val resolved = NativeSessionSelector.resolveCommand(
+                candidates = listOf(nativeSpotify),
+                action = action,
+                expectedState = tokenlessWebState,
+                ytmPackage = MediaNotificationListenerService.YTM_PACKAGE
+            )
+            assertNull(
+                "Tokenless WEB state must never drive native $action on another session",
+                resolved
+            )
+        }
+    }
+
+    @Test
+    fun crit81_tokenlessAppPlaceholderUsesLiveNativePlayingState() {
+        val playingTarget = SessionCandidate(
+            handle = "ytm-ctrl",
+            packageName = MediaNotificationListenerService.YTM_PACKAGE,
+            token = "token-ytm-playing",
+            isPlaying = true,
+            isPaused = false
+        )
+        val pausedPlaceholder = MusicState(
+            mode = MusicMode.APP,
+            isPlaying = false,
+            sessionToken = null
+        )
+
+        val pauseResolved = NativeSessionSelector.resolveCommand(
+            candidates = listOf(playingTarget),
+            action = MusicAction.PLAY_PAUSE,
+            expectedState = pausedPlaceholder,
+            ytmPackage = MediaNotificationListenerService.YTM_PACKAGE
+        )
+        assertEquals(
+            "Tokenless APP placeholder (isPlaying=false) must not invert live playing target into PLAY",
+            TransportIntent.PAUSE,
+            pauseResolved?.intent
+        )
+
+        val pausedTarget = playingTarget.copy(isPlaying = false, isPaused = true)
+        val playingPlaceholder = MusicState(
+            mode = MusicMode.APP,
+            isPlaying = true,
+            sessionToken = null
+        )
+        val playResolved = NativeSessionSelector.resolveCommand(
+            candidates = listOf(pausedTarget),
+            action = MusicAction.PLAY_PAUSE,
+            expectedState = playingPlaceholder,
+            ytmPackage = MediaNotificationListenerService.YTM_PACKAGE
+        )
+        assertEquals(
+            "Tokenless APP placeholder (isPlaying=true) must use live paused target state -> PLAY",
+            TransportIntent.PLAY,
+            playResolved?.intent
+        )
+    }
+
+    @Test
+    fun crit82_tapDispatchesUsingLastRenderedPlaybackNotQueuedStateFlowUpdate() {
+        val store = RenderedPlaybackStore()
+        assertNull("Tap store must be null before initial render", store.snapshotForTap())
+
+        val renderedA = DisplayedPlayback(
+            state = MusicState(
+                title = "Track A",
+                isPlaying = true,
+                mode = MusicMode.APP,
+                hasActiveSession = true,
+                sessionPackage = MediaNotificationListenerService.YTM_PACKAGE,
+                sessionToken = "token-A"
+            ),
+            target = CommandTarget.NATIVE
+        )
+        val queuedUnrenderedB = DisplayedPlayback(
+            state = MusicState(
+                title = "Track B",
+                isPlaying = false,
+                mode = MusicMode.APP,
+                hasActiveSession = true,
+                sessionPackage = "com.spotify.music",
+                sessionToken = "token-B"
+            ),
+            target = CommandTarget.NATIVE
+        )
+
+        store.onRendered(renderedA)
+        assertEquals(
+            "Tap must bind to rendered player A before queued update B is rendered",
+            "token-A",
+            store.snapshotForTap()?.state?.sessionToken
+        )
+
+        store.onRendered(queuedUnrenderedB)
+        assertEquals(
+            "After player B is rendered, tap must bind to token-B",
+            "token-B",
+            store.snapshotForTap()?.state?.sessionToken
+        )
+    }
+
+    @Test
+    fun crit83_allNativeRefreshesSerializeThroughSingleCoalescedWorker() = runBlocking {
+        // External callers must not bypass RefreshCoalescer via a public synchronous refreshFromContext method.
+        val hasPublicDirectRefresh = MediaNotificationListenerService.Companion::class.java
+            .methods
+            .any { it.name == "refreshFromContext" }
+        assertFalse(
+            "MediaNotificationListenerService.refreshFromContext must not be publicly callable to bypass RefreshCoalescer",
+            hasPublicDirectRefresh
+        )
+
+        // Verify coalesced worker strictly serializes concurrent reads (no slow read overwriting newer track).
+        val workerExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "test-crit83-serial")
+        }
+        val workerDispatcher = workerExecutor.asCoroutineDispatcher()
+        try {
+            val activeRuns = AtomicInteger(0)
+            val maxConcurrentRuns = AtomicInteger(0)
+            val currentSourceTitle = java.util.concurrent.atomic.AtomicReference("Track A")
+            val publishedTitle = java.util.concurrent.atomic.AtomicReference("")
+            val firstReadStarted = CompletableDeferred<Unit>()
+            val allowFirstReadFinish = CompletableDeferred<Unit>()
+            val readCount = AtomicInteger(0)
+
+            val coalescer = RefreshCoalescer(
+                scope = this,
+                ioDispatcher = workerDispatcher,
+                action = {
+                    val concurrent = activeRuns.incrementAndGet()
+                    maxConcurrentRuns.updateAndGet { prev -> maxOf(prev, concurrent) }
+                    try {
+                        val n = readCount.incrementAndGet()
+                        val sampled = currentSourceTitle.get()
+                        if (n == 1) {
+                            firstReadStarted.complete(Unit)
+                            allowFirstReadFinish.await()
+                        }
+                        publishedTitle.set(sampled)
+                    } finally {
+                        activeRuns.decrementAndGet()
+                    }
+                }
+            )
+
+            val periodicJob = coalescer.request()
+            firstReadStarted.await()
+            currentSourceTitle.set("Track B")
+            val callbackJob = coalescer.request()
+            allowFirstReadFinish.complete(Unit)
+
+            periodicJob.join()
+            callbackJob.join()
+
+            assertEquals("Only one read/publish pass may execute at a time", 1, maxConcurrentRuns.get())
+            assertEquals("Final published state must reflect newer Track B", "Track B", publishedTitle.get())
+        } finally {
+            workerDispatcher.close()
+        }
+    }
+
+    @Test
+    fun crit84_tokenlessAppPlaceholderUsesLiveNativeRatingForLikeAndDislike() {
+        val placeholderState = MusicState(
+            mode = MusicMode.APP,
+            likeStatus = LikeStatus.NONE,
+            sessionToken = null
+        )
+
+        val likedTarget = SessionCandidate(
+            handle = "ytm-ctrl",
+            packageName = MediaNotificationListenerService.YTM_PACKAGE,
+            token = "token-ytm-liked",
+            isPlaying = true,
+            isPaused = false,
+            likeStatus = LikeStatus.LIKED
+        )
+        val likeResolved = NativeSessionSelector.resolveCommand(
+            candidates = listOf(likedTarget),
+            action = MusicAction.LIKE,
+            expectedState = placeholderState,
+            ytmPackage = MediaNotificationListenerService.YTM_PACKAGE
+        )
+        assertEquals(
+            "Tokenless placeholder must use live LIKED status and resolve LIKE to CLEAR_RATING",
+            TransportIntent.CLEAR_RATING,
+            likeResolved?.intent
+        )
+
+        val dislikedTarget = likedTarget.copy(likeStatus = LikeStatus.DISLIKED)
+        val dislikeResolved = NativeSessionSelector.resolveCommand(
+            candidates = listOf(dislikedTarget),
+            action = MusicAction.DISLIKE,
+            expectedState = placeholderState,
+            ytmPackage = MediaNotificationListenerService.YTM_PACKAGE
+        )
+        assertEquals(
+            "Tokenless placeholder must use live DISLIKED status and resolve DISLIKE to CLEAR_RATING",
+            TransportIntent.CLEAR_RATING,
+            dislikeResolved?.intent
+        )
+    }
+
+    @Test
+    fun crit85_activeWebSessionOffOriginNeverPairsWithNativeAndDeclinedWebNeverDispatchesMediaKey() {
+        val activeWebState = MusicState(
+            title = "Web Song",
+            artist = "Web Artist",
+            isPlaying = true,
+            mode = MusicMode.WEB,
+            hasActiveSession = true,
+            sessionToken = null
+        )
+        val playingNativeState = MusicState(
+            title = "Native Song",
+            artist = "Native Artist",
+            isPlaying = true,
+            mode = MusicMode.APP,
+            hasActiveSession = true,
+            sessionPackage = MediaNotificationListenerService.YTM_PACKAGE,
+            sessionToken = "token-native"
+        )
+
+        // 1) Active WEB state while navigating off YTM origin must NOT pair stale Web Song with NATIVE target
+        val withNativeFallback = MusicPlaybackRouter.resolve(
+            mode = MusicMode.WEB,
+            webState = activeWebState,
+            appState = playingNativeState,
+            webViewReadyForPlayer = false
+        )
+        assertEquals("Native Song", withNativeFallback.state.title)
+        assertEquals("token-native", withNativeFallback.state.sessionToken)
+        assertEquals(CommandTarget.NATIVE, withNativeFallback.target)
+
+        // 2) Active WEB state off-origin with NO native session must sanitize displayed state to idle WEB
+        val withoutNativeFallback = MusicPlaybackRouter.resolve(
+            mode = MusicMode.WEB,
+            webState = activeWebState,
+            appState = null,
+            webViewReadyForPlayer = false
+        )
+        assertFalse(
+            "Stale active web state must not be kept when WebView is off player origin",
+            withoutNativeFallback.state.hasActiveSession
+        )
+        assertEquals("", withoutNativeFallback.state.title)
+        assertEquals(CommandTarget.NATIVE, withoutNativeFallback.target)
+
+        // 3) Declined active WEB action must never fire a global AudioManager media key
+        assertFalse(
+            "Active WEB track must not dispatch global media key",
+            WebActionFallbackPolicy.shouldDispatchGlobalMediaKey(activeWebState)
+        )
+        assertFalse(
+            "Token-bound vanished native session must not dispatch global media key",
+            WebActionFallbackPolicy.shouldDispatchGlobalMediaKey(playingNativeState)
+        )
+        assertTrue(
+            "Unbound APP placeholder may still use global media key to wake player",
+            WebActionFallbackPolicy.shouldDispatchGlobalMediaKey(MusicState(mode = MusicMode.APP))
+        )
+    }
+
+    @Test
+    fun crit86_disconnectPreventsInFlightStalePublishAndObserverResurrectionWithoutBlocking() {
+        val store = NativeSessionStateStore()
+        var cancelledPending = false
+        var observerRegistered = false
+        val sessionChanges = AtomicInteger(0)
+
+        store.onConnected()
+        assertTrue(store.isListenerConnected)
+
+        // Start a Binder read on worker, capture epoch before disconnect intervenes
+        val inFlightEpoch = store.captureEpoch()
+        val staleReadResult = MusicState(
+            title = "Stale Track",
+            isPlaying = true,
+            mode = MusicMode.APP,
+            hasActiveSession = true,
+            sessionPackage = MediaNotificationListenerService.YTM_PACKAGE,
+            sessionToken = "token-stale"
+        )
+
+        // Disconnect runs immediately without blocking on any in-flight Binder read
+        store.onDisconnected(
+            cancelPendingVerification = { cancelledPending = true },
+            clearObserver = { observerRegistered = false },
+            onSessionChanged = { sessionChanges.incrementAndGet() }
+        )
+        assertTrue(cancelledPending)
+        assertFalse(store.isListenerConnected)
+        assertNull(store.appState.value)
+
+        // In-flight worker completes AFTER disconnect -> must NOT publish stale state or register observer
+        val publishedAfterDisconnect = store.publishIfCurrent(
+            capturedEpoch = inFlightEpoch,
+            state = staleReadResult,
+            onSessionChanged = { sessionChanges.incrementAndGet() }
+        )
+        assertFalse(
+            "Stale read completed after disconnect must not publish",
+            publishedAfterDisconnect
+        )
+        assertFalse(
+            "Stale epoch after disconnect must never register a MediaController callback",
+            store.isEpochCurrent(inFlightEpoch)
+        )
+        assertNull(store.appState.value)
+        assertEquals(0, sessionChanges.get())
+
+        // Reconnect, capture fresh epoch, publish state -> succeeds and tracks position-only atomically
+        store.onConnected()
+        val freshEpoch = store.captureEpoch()
+        assertTrue(
+            store.publishIfCurrent(
+                capturedEpoch = freshEpoch,
+                state = staleReadResult.copy(title = "Fresh Track", currentSec = 10f),
+                onSessionChanged = {
+                    sessionChanges.incrementAndGet()
+                    observerRegistered = true
+                }
+            )
+        )
+        assertTrue(observerRegistered)
+        assertEquals("Fresh Track", store.appState.value?.title)
+        assertEquals(1, sessionChanges.get())
+
+        // Position-only update commits atomically without triggering session-changed callback
+        assertTrue(
+            store.publishIfCurrent(
+                capturedEpoch = freshEpoch,
+                state = staleReadResult.copy(title = "Fresh Track", currentSec = 15f),
+                onSessionChanged = { sessionChanges.incrementAndGet() }
+            )
+        )
+        assertEquals(1, sessionChanges.get())
+    }
 }

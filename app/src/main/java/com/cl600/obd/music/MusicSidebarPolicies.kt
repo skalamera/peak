@@ -4,6 +4,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 
@@ -164,16 +167,16 @@ internal object MusicPlaybackRouter {
     ): DisplayedPlayback {
         return when (mode) {
             MusicMode.WEB -> when {
-                webState.hasActiveSession -> DisplayedPlayback(
+                webState.hasActiveSession && webViewReadyForPlayer -> DisplayedPlayback(
                     state = webState,
-                    target = if (webViewReadyForPlayer) CommandTarget.WEB else CommandTarget.NATIVE
+                    target = CommandTarget.WEB
                 )
                 appState != null -> DisplayedPlayback(
                     state = appState.copy(mode = MusicMode.WEB),
                     target = CommandTarget.NATIVE
                 )
                 else -> DisplayedPlayback(
-                    state = webState,
+                    state = if (webViewReadyForPlayer) webState else MusicState(mode = MusicMode.WEB),
                     target = if (webViewReadyForPlayer) CommandTarget.WEB else CommandTarget.NATIVE
                 )
             }
@@ -229,14 +232,19 @@ internal object NativeSessionSelector {
         ytmPackage: String
     ): ResolvedNativeCommand<T>? {
         val expectedToken = expectedState?.sessionToken
+        // State not sourced from a native session must never drive a native command.
+        if (expectedState != null && expectedToken == null && expectedState.mode == MusicMode.WEB) {
+            return null
+        }
         val target = if (expectedToken != null) {
             candidates.firstOrNull { it.token == expectedToken } ?: return null
         } else {
             selectPreferred(candidates, ytmPackage) ?: return null
         }
 
-        val renderedPlaying = expectedState?.isPlaying ?: target.isPlaying
-        val renderedLike = expectedState?.likeStatus ?: target.likeStatus
+        val boundState = expectedState?.takeIf { it.sessionToken != null }
+        val renderedPlaying = boundState?.isPlaying ?: target.isPlaying
+        val renderedLike = boundState?.likeStatus ?: target.likeStatus
         val intent = when (action) {
             MusicAction.PLAY_PAUSE ->
                 if (renderedPlaying) TransportIntent.PAUSE else TransportIntent.PLAY
@@ -304,4 +312,85 @@ internal object MusicPollLoopPolicy {
         mode: MusicMode,
         webHasActiveSession: Boolean
     ): Boolean = mode == MusicMode.APP || !webHasActiveSession
+}
+
+internal class RenderedPlaybackStore {
+    private var lastRendered: DisplayedPlayback? = null
+
+    fun onRendered(playback: DisplayedPlayback) {
+        lastRendered = playback
+    }
+
+    fun snapshotForTap(): DisplayedPlayback? = lastRendered
+}
+
+internal object WebActionFallbackPolicy {
+    fun shouldDispatchGlobalMediaKey(expectedState: MusicState?): Boolean {
+        if (expectedState == null) return true
+        if (expectedState.sessionToken != null) return false
+        if (expectedState.mode == MusicMode.WEB && expectedState.hasActiveSession) return false
+        return true
+    }
+}
+
+internal class NativeSessionStateStore {
+    private val stateLock = Any()
+    private val _appState = MutableStateFlow<MusicState?>(null)
+    val appState: StateFlow<MusicState?> = _appState.asStateFlow()
+
+    @Volatile
+    var isListenerConnected: Boolean = false
+        private set
+
+    private var disconnectEpoch: Long = 0L
+
+    fun onConnected() {
+        synchronized(stateLock) {
+            disconnectEpoch++
+            isListenerConnected = true
+        }
+    }
+
+    fun onDisconnected(
+        cancelPendingVerification: () -> Unit,
+        clearObserver: () -> Unit,
+        onSessionChanged: () -> Unit
+    ) {
+        synchronized(stateLock) {
+            isListenerConnected = false
+            disconnectEpoch++
+            cancelPendingVerification()
+            emitLocked(null, onSessionChanged)
+        }
+        clearObserver()
+    }
+
+    fun captureEpoch(): Long = synchronized(stateLock) { disconnectEpoch }
+
+    fun isEpochCurrent(epoch: Long): Boolean =
+        synchronized(stateLock) { epoch == disconnectEpoch }
+
+    fun publishIfCurrent(
+        capturedEpoch: Long,
+        state: MusicState?,
+        onSessionChanged: () -> Unit
+    ): Boolean {
+        synchronized(stateLock) {
+            if (capturedEpoch != disconnectEpoch) return false
+            emitLocked(state, onSessionChanged)
+            return true
+        }
+    }
+
+    private fun emitLocked(state: MusicState?, onSessionChanged: () -> Unit) {
+        val prev = _appState.value
+        _appState.value = state
+        val sessionChanged = prev?.sessionToken != state?.sessionToken ||
+            prev?.isPlaying != state?.isPlaying ||
+            prev?.title != state?.title ||
+            prev?.likeStatus != state?.likeStatus
+        if (sessionChanged) {
+            onSessionChanged()
+        }
+    }
 }

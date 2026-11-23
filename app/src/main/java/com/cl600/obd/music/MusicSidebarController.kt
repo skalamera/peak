@@ -129,6 +129,7 @@ class MusicSidebarController(
     private var musicMode = loadSavedMode()
     private val lazyWebView = LazyWebViewInitializer<WebView>()
     private val callbackGate = WebViewCallbackGate()
+    private val renderedPlaybackStore = RenderedPlaybackStore()
     private var webViewInitialized = false
     private var latestWebState = MusicState(mode = MusicMode.WEB)
     private var lastNotifiedTrackKey = ""
@@ -162,7 +163,9 @@ class MusicSidebarController(
         }
         viewRailProgressTrack.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ ->
             if (bottom > top) {
-                updateProgressHairlines(currentDisplayedState().progressFraction())
+                val frac = (renderedPlaybackStore.snapshotForTap()?.state
+                    ?: currentDisplayedPlayback().state).progressFraction()
+                updateProgressHairlines(frac)
             }
         }
 
@@ -172,6 +175,7 @@ class MusicSidebarController(
         }
         applyCollapsedStateImmediate(sidebarState)
         applyModeUi(loadInitialPage = (musicMode == MusicMode.WEB))
+        renderMusicState()
         refreshCompanionCapabilitiesAsync()
         startObservers()
     }
@@ -191,7 +195,7 @@ class MusicSidebarController(
     fun onResume() {
         MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
         refreshCompanionCapabilitiesAsync()
-        renderMusicState(currentDisplayedState())
+        renderMusicState()
     }
 
     fun destroy() {
@@ -252,7 +256,7 @@ class MusicSidebarController(
             } else {
                 MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
                 refreshCompanionCapabilitiesAsync()
-                renderMusicState(currentDisplayedState())
+                renderMusicState()
             }
         }
 
@@ -357,6 +361,12 @@ class MusicSidebarController(
                         super.onPageStarted(view, url, favicon)
                         if (callbackGate.destroyed || view !== webViewYtm) return
                         callbackGate.onNavigationStarted()
+                        if (!YtmScriptBridge.isYtmPlayerUrl(url) && latestWebState.hasActiveSession) {
+                            latestWebState = MusicState(mode = MusicMode.WEB)
+                            if (musicMode == MusicMode.WEB) {
+                                renderMusicState()
+                            }
+                        }
                         progressBarYtmWeb.visibility = View.VISIBLE
                         if (YtmScriptBridge.isGoogleWebViewAuthBlocked(url, null, null)) {
                             layoutWebAuthBanner.visibility = View.VISIBLE
@@ -423,7 +433,7 @@ class MusicSidebarController(
                         appStatePresent = appMusicState != null
                     )
                 ) {
-                    renderMusicState(currentDisplayedState())
+                    renderMusicState()
                     updateCompanionSessionStatusOnly()
                 }
             }
@@ -439,11 +449,9 @@ class MusicSidebarController(
                         webHasActiveSession = latestWebState.hasActiveSession
                     )
                 ) {
-                    withContext(Dispatchers.IO) {
-                        MediaNotificationListenerService.refreshFromContext(activity.applicationContext)
-                    }
+                    MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext).join()
                 }
-                val activePlaying = currentDisplayedState().isPlaying ||
+                val activePlaying = (renderedPlaybackStore.snapshotForTap()?.state?.isPlaying == true) ||
                     sidebarState == SidebarState.EXPANDED
                 delay(if (activePlaying) 1000L else 2400L)
             }
@@ -457,7 +465,7 @@ class MusicSidebarController(
             if (latestWebState.hasActiveSession) {
                 latestWebState = MusicState(mode = MusicMode.WEB)
                 if (musicMode == MusicMode.WEB) {
-                    renderMusicState(currentDisplayedState())
+                    renderMusicState()
                 }
             }
             return
@@ -472,7 +480,7 @@ class MusicSidebarController(
                 if (parsed != null) {
                     latestWebState = parsed
                     if (musicMode == MusicMode.WEB) {
-                        renderMusicState(currentDisplayedState())
+                        renderMusicState()
                     }
                 }
             }
@@ -491,9 +499,6 @@ class MusicSidebarController(
         )
     }
 
-    private fun currentDisplayedState(): MusicState =
-        currentDisplayedPlayback().state
-
     private fun switchMode(target: MusicMode) {
         if (musicMode == target) return
         musicMode = target
@@ -508,7 +513,7 @@ class MusicSidebarController(
         } else {
             pollWebViewOnce()
         }
-        renderMusicState(currentDisplayedState())
+        renderMusicState()
     }
 
     private fun applyModeUi(loadInitialPage: Boolean) {
@@ -539,13 +544,16 @@ class MusicSidebarController(
 
     private fun performMusicAction(action: MusicAction) {
         if (callbackGate.destroyed) return
-        val displayed = currentDisplayedPlayback()
+        val displayed = renderedPlaybackStore.snapshotForTap() ?: return
         val wv = webViewYtm
-        if (displayed.target == CommandTarget.WEB &&
-            webViewInitialized &&
-            wv != null &&
-            YtmScriptBridge.isYtmPlayerUrl(wv.url)
-        ) {
+        if (displayed.target == CommandTarget.WEB) {
+            if (!webViewInitialized || wv == null || !YtmScriptBridge.isYtmPlayerUrl(wv.url)) {
+                if (latestWebState.hasActiveSession) {
+                    latestWebState = MusicState(mode = MusicMode.WEB)
+                }
+                renderMusicState()
+                return
+            }
             val gen = callbackGate.captureWebCallbackGeneration() ?: return
             wv.evaluateJavascript(YtmScriptBridge.buildActionJs(action)) { res ->
                 if (!callbackGate.isWebCallbackCurrent(gen) || wv !== webViewYtm) {
@@ -553,7 +561,8 @@ class MusicSidebarController(
                 }
                 val handled = res?.trim() == "true"
                 if (!handled) {
-                    handleFallbackCompanionAction(action, displayed.state)
+                    // Web control unavailable/disabled: refresh web state without waking another player.
+                    pollWebViewOnce()
                 } else {
                     // Immediate re-poll after DOM state settles
                     scope.launch {
@@ -585,6 +594,9 @@ class MusicSidebarController(
             MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext)
             return
         }
+        if (!WebActionFallbackPolicy.shouldDispatchGlobalMediaKey(expectedState)) {
+            return
+        }
         when (action) {
             MusicAction.PLAY_PAUSE -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
             MusicAction.NEXT -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
@@ -606,10 +618,8 @@ class MusicSidebarController(
         mgr.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         scope.launch {
             delay(250L)
-            withContext(Dispatchers.IO) {
-                MediaNotificationListenerService.refreshFromContext(activity.applicationContext)
-            }
-            renderMusicState(currentDisplayedState())
+            MediaNotificationListenerService.requestRefreshAsync(activity.applicationContext).join()
+            renderMusicState()
         }
     }
 
@@ -621,7 +631,9 @@ class MusicSidebarController(
         )
     }
 
-    private fun renderMusicState(state: MusicState) {
+    private fun renderMusicState() {
+        val displayed = currentDisplayedPlayback()
+        val state = displayed.state
         val title = state.title.ifBlank {
             if (musicMode == MusicMode.WEB) "YouTube Music" else "Companion Ready"
         }
@@ -675,6 +687,7 @@ class MusicSidebarController(
                 }
             }
         }
+        renderedPlaybackStore.onRendered(displayed)
     }
 
     private fun updateProgressHairlines(fraction: Float) {
@@ -744,7 +757,7 @@ class MusicSidebarController(
             cachedYtmInstalled = installed
             cachedNotifAccessEnabled = notifGranted
             updateCompanionCardUiFromCache()
-            renderMusicState(currentDisplayedState())
+            renderMusicState()
         }
     }
 
