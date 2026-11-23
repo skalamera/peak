@@ -165,18 +165,23 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:orientation="horizontal"
-            android:paddingTop="4dp">
+            android:paddingLeft="8dp"
+            android:paddingTop="2dp"
+            android:paddingRight="8dp">
 
             <FrameLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1">
+                android:layout_weight="1"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp">
 
                 <ImageView
                     android:id="@+id/ivCl600Badge"
-                    android:layout_width="145dp"
-                    android:layout_height="40dp"
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
                     android:layout_gravity="center"
+                    android:adjustViewBounds="true"
                     android:contentDescription="CL 600 V12 Biturbo"
                     android:scaleType="fitCenter"
                     android:src="@drawable/cl600_biturbo_badge" />
@@ -184,19 +189,22 @@
 
             <View
                 android:layout_width="1dp"
-                android:layout_height="24dp"
+                android:layout_height="18dp"
                 android:background="#242428" />
 
             <FrameLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1">
+                android:layout_weight="1"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp">
 
                 <ImageView
                     android:id="@+id/ivEurochargedLogo"
-                    android:layout_width="148dp"
-                    android:layout_height="40dp"
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
                     android:layout_gravity="center"
+                    android:adjustViewBounds="true"
                     android:contentDescription="Eurocharged"
                     android:scaleType="fitCenter"
                     android:src="@drawable/eurocharged_logo" />
@@ -262,7 +270,7 @@
         android:ellipsize="end"
         android:gravity="center"
         android:maxLines="1"
-        android:text="Tap CONNECT to pair your OBDII adapter or try DEMO mode"
+        android:text="Plug in Galletto USB cable and tap CONNECT, or try Demo mode"
         android:textColor="@color/text_muted"
         android:textSize="11sp"
         android:typeface="monospace" />

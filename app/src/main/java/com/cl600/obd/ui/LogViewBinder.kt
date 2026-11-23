@@ -18,6 +18,7 @@ import android.widget.Toast
 import com.cl600.obd.R
 import com.cl600.obd.model.LogEntry
 import com.cl600.obd.model.LogLevel
+import com.cl600.obd.model.TransportType
 import com.cl600.obd.obd.ObdManager
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -35,6 +36,14 @@ class LogViewBinder(
     private val tvLogOutput: TextView = root.findViewById(R.id.tvLogOutput)
     private val etRawCmd: EditText = root.findViewById(R.id.etRawCmd)
     private val btnSendCmd: Button = root.findViewById(R.id.btnSendCmd)
+
+    private val btnPreset1: Button = root.findViewById(R.id.btnCmdAtz)
+    private val btnPreset2: Button = root.findViewById(R.id.btnCmdAtrv)
+    private val btnPreset3: Button = root.findViewById(R.id.btnCmdAtdp)
+
+    private var preset1Cmd = "INIT"
+    private var preset2Cmd = "0105"
+    private var preset3Cmd = "010C"
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -68,18 +77,25 @@ class LogViewBinder(
             }
         }
 
-        root.findViewById<Button>(R.id.btnCmdAtz).setOnClickListener { ObdManager.sendRawCommand("ATZ") }
-        root.findViewById<Button>(R.id.btnCmdAtrv).setOnClickListener { ObdManager.sendRawCommand("ATRV") }
-        root.findViewById<Button>(R.id.btnCmdAtdp).setOnClickListener { ObdManager.sendRawCommand("ATDP") }
+        btnPreset1.setOnClickListener { ObdManager.sendRawCommand(preset1Cmd) }
+        btnPreset2.setOnClickListener { ObdManager.sendRawCommand(preset2Cmd) }
+        btnPreset3.setOnClickListener { ObdManager.sendRawCommand(preset3Cmd) }
         root.findViewById<Button>(R.id.btnCmd0100).setOnClickListener { ObdManager.sendRawCommand("0100") }
         root.findViewById<Button>(R.id.btnCmd010b).setOnClickListener { ObdManager.sendRawCommand("010B") }
         root.findViewById<Button>(R.id.btnCmd03).setOnClickListener { ObdManager.sendRawCommand("03") }
+
+        applyTransportPresets(TransportType.USB_KLINE)
     }
 
-    fun render(entries: List<LogEntry>, verbosePolls: Boolean) {
+    fun render(
+        entries: List<LogEntry>,
+        verbosePolls: Boolean,
+        transport: TransportType = TransportType.USB_KLINE
+    ) {
         if (cbVerbosePoll.isChecked != verbosePolls) {
             cbVerbosePoll.isChecked = verbosePolls
         }
+        applyTransportPresets(transport)
 
         val builder = SpannableStringBuilder()
         for (entry in entries) {
@@ -108,5 +124,22 @@ class LogViewBinder(
                 svLog.fullScroll(View.FOCUS_DOWN)
             }
         }
+    }
+
+    private fun applyTransportPresets(transport: TransportType) {
+        if (transport == TransportType.USB_KLINE) {
+            preset1Cmd = "INIT"
+            preset2Cmd = "0105"
+            preset3Cmd = "010C"
+            etRawCmd.hint = "Enter OBD hex (e.g. 0105, 010B, 010C, 03, INIT)"
+        } else {
+            preset1Cmd = "ATZ"
+            preset2Cmd = "ATRV"
+            preset3Cmd = "ATDP"
+            etRawCmd.hint = "Enter AT or OBD hex command (e.g. ATDP, 010C)"
+        }
+        if (btnPreset1.text.toString() != preset1Cmd) btnPreset1.text = preset1Cmd
+        if (btnPreset2.text.toString() != preset2Cmd) btnPreset2.text = preset2Cmd
+        if (btnPreset3.text.toString() != preset3Cmd) btnPreset3.text = preset3Cmd
     }
 }

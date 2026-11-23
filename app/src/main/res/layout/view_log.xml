@@ -99,7 +99,7 @@
                 android:minWidth="56dp"
                 android:paddingLeft="10dp"
                 android:paddingRight="10dp"
-                android:text="ATZ"
+                android:text="INIT"
                 android:textColor="@color/accent_amber"
                 android:textSize="11sp"
                 android:typeface="monospace" />
@@ -113,7 +113,7 @@
                 android:minWidth="56dp"
                 android:paddingLeft="10dp"
                 android:paddingRight="10dp"
-                android:text="ATRV"
+                android:text="0105"
                 android:textColor="@color/accent_amber"
                 android:textSize="11sp"
                 android:typeface="monospace" />
@@ -127,7 +127,7 @@
                 android:minWidth="56dp"
                 android:paddingLeft="10dp"
                 android:paddingRight="10dp"
-                android:text="ATDP"
+                android:text="010C"
                 android:textColor="@color/accent_amber"
                 android:textSize="11sp"
                 android:typeface="monospace" />
@@ -189,7 +189,7 @@
             android:layout_height="42dp"
             android:layout_weight="1"
             android:background="@drawable/bg_input_box"
-            android:hint="Enter AT or OBD hex command (e.g. ATDP, 010C)"
+            android:hint="Enter OBD hex (e.g. 0105, 010B, 010C, 03, INIT)"
             android:imeOptions="actionSend"
             android:inputType="textCapCharacters"
             android:paddingLeft="10dp"

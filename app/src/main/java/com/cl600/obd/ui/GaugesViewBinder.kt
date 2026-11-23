@@ -195,7 +195,7 @@ class GaugesViewBinder(root: View) {
             is ConnectionState.Connecting -> "Connecting to ${state.detail}..."
             is ConnectionState.Initializing -> "Initializing: ${state.detail}..."
             is ConnectionState.Error -> "Error: ${state.message}"
-            is ConnectionState.Disconnected -> "Not connected — tap CONNECT to pair OBDII or launch Demo mode"
+            is ConnectionState.Disconnected -> "Not connected — plug in Galletto USB cable and tap CONNECT, or launch Demo mode"
         }
     }
 

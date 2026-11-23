@@ -2,7 +2,6 @@ package com.cl600.obd.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.cl600.obd.model.BtStrategy
 import com.cl600.obd.model.ConnectionConfig
 import com.cl600.obd.model.ObdProtocol
 import com.cl600.obd.model.TransportType
@@ -14,13 +13,9 @@ class AppPreferences(context: Context) {
         context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
 
     fun loadConfig(): ConnectionConfig {
-        val transportName = prefs.getString(KEY_TRANSPORT, TransportType.BLUETOOTH.name)
+        val transportName = prefs.getString(KEY_TRANSPORT, TransportType.USB_KLINE.name)
         val transport = runCatching { TransportType.valueOf(transportName ?: "") }
-            .getOrDefault(TransportType.BLUETOOTH)
-
-        val strategyName = prefs.getString(KEY_BT_STRATEGY, BtStrategy.AUTO_ALL.name)
-        val strategy = runCatching { BtStrategy.valueOf(strategyName ?: "") }
-            .getOrDefault(BtStrategy.AUTO_ALL)
+            .getOrDefault(TransportType.USB_KLINE)
 
         val protoName = prefs.getString(KEY_OBD_PROTOCOL, ObdProtocol.AUTO_WITH_KLINE_FALLBACK.name)
         val proto = runCatching { ObdProtocol.valueOf(protoName ?: "") }
@@ -35,9 +30,7 @@ class AppPreferences(context: Context) {
 
         return ConnectionConfig(
             transportType = transport,
-            bluetoothAddress = prefs.getString(KEY_BT_ADDRESS, "") ?: "",
-            bluetoothName = prefs.getString(KEY_BT_NAME, "") ?: "",
-            btStrategy = strategy,
+            usbDeviceName = prefs.getString(KEY_USB_DEVICE, "") ?: "",
             obdProtocol = proto,
             wifiHost = prefs.getString(KEY_WIFI_HOST, "192.168.0.10") ?: "192.168.0.10",
             wifiPort = prefs.getInt(KEY_WIFI_PORT, 35000),
@@ -50,9 +43,7 @@ class AppPreferences(context: Context) {
     fun saveConfig(config: ConnectionConfig) {
         prefs.edit()
             .putString(KEY_TRANSPORT, config.transportType.name)
-            .putString(KEY_BT_ADDRESS, config.bluetoothAddress)
-            .putString(KEY_BT_NAME, config.bluetoothName)
-            .putString(KEY_BT_STRATEGY, config.btStrategy.name)
+            .putString(KEY_USB_DEVICE, config.usbDeviceName)
             .putString(KEY_OBD_PROTOCOL, config.obdProtocol.name)
             .putString(KEY_WIFI_HOST, config.wifiHost)
             .putInt(KEY_WIFI_PORT, config.wifiPort)
@@ -65,9 +56,7 @@ class AppPreferences(context: Context) {
     companion object {
         private const val PREF_NAME = "cl600_obd_prefs"
         private const val KEY_TRANSPORT = "transport_type"
-        private const val KEY_BT_ADDRESS = "bt_address"
-        private const val KEY_BT_NAME = "bt_name"
-        private const val KEY_BT_STRATEGY = "bt_strategy"
+        private const val KEY_USB_DEVICE = "usb_device_name"
         private const val KEY_OBD_PROTOCOL = "obd_protocol"
         private const val KEY_WIFI_HOST = "wifi_host"
         private const val KEY_WIFI_PORT = "wifi_port"

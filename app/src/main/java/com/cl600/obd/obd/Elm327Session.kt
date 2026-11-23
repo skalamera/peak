@@ -12,31 +12,9 @@ class Elm327Session(
     private val transport: ObdTransport,
     private val protocolPref: ObdProtocol,
     private val logger: (LogLevel, String) -> Unit
-) {
-    data class InitResult(
-        val adapterVersion: String,
-        val activeProtocol: String,
-        val isCanProtocol: Boolean,
-        val supportedPids: Set<String>,
-        val baroKpa: Float?,
-        val milOn: Boolean,
-        val dtcCountReported: Int
-    )
+) : ObdSession {
 
-    data class PollSnapshot(
-        val mapKpa: Float? = null,
-        val baroKpa: Float? = null,
-        val iatCelsius: Float? = null,
-        val coolantCelsius: Float? = null,
-        val voltage: Float? = null,
-        val rpm: Int? = null,
-        val loadPercent: Float? = null,
-        val timingAdvanceDeg: Float? = null,
-        val throttlePercent: Float? = null,
-        val speedKmh: Int? = null,
-        val milOn: Boolean? = null,
-        val dtcCountReported: Int? = null
-    )
+    override val isDirectKline: Boolean = false
 
     var isCanProtocol: Boolean = false
         private set
@@ -46,15 +24,14 @@ class Elm327Session(
 
     private var supportsPid42Voltage: Boolean = false
     private var loggedFirstPollCycle: Boolean = false
-    var verbosePollLogging: Boolean = false
+    override var verbosePollLogging: Boolean = false
 
-    val isConnected: Boolean
+    override val isConnected: Boolean
         get() = transport.isConnected
 
-    suspend fun initialize(): InitResult {
+    override suspend fun initialize(): ObdInitResult {
         logger(LogLevel.INFO, "Initializing ELM327 adapter on ${transport.displayName}...")
 
-        // Reset adapter
         val atzResp = execLogged("ATZ", timeoutMs = 3000L)
         delay(300L)
         val adapterVersion = ObdParser.cleanResponse(atzResp, "ATZ")
@@ -62,18 +39,16 @@ class Elm327Session(
             ?: "ELM327"
         logger(LogLevel.INFO, "Adapter version: $adapterVersion")
 
-        // Basic ELM327 configuration (best-effort on clones)
         sendOptionalAt("ATE0")
         sendOptionalAt("ATL0")
         sendOptionalAt("ATS0")
         sendOptionalAt("ATH0")
-        sendOptionalAt("ATST96") // 600ms timeout helps slow 2003 K-Line ECU handshake
+        sendOptionalAt("ATST96")
 
-        // Protocol selection & ECU handshake via 0100
-        var pid0100Resp = ""
-        var pids00 = emptySet<String>()
+        var pids00: Set<String>
 
         if (protocolPref == ObdProtocol.AUTO_WITH_KLINE_FALLBACK) {
+            pids00 = emptySet()
             val candidates = listOf(
                 ObdProtocol.AUTO_WITH_KLINE_FALLBACK,
                 ObdProtocol.KWP_FAST_5,
@@ -87,7 +62,6 @@ class Elm327Session(
                 val resp = execLogged("0100", timeoutMs = 6000L)
                 val parsed = ObdParser.parseSupportedPids(resp, 0)
                 if (parsed.isNotEmpty()) {
-                    pid0100Resp = resp
                     pids00 = parsed
                     matched = true
                     logger(LogLevel.INFO, "ECU responded on ${proto.displayName}")
@@ -104,17 +78,16 @@ class Elm327Session(
             }
         } else {
             execLogged(protocolPref.atCommand, timeoutMs = 2000L)
-            pid0100Resp = execLogged("0100", timeoutMs = 6000L)
+            val pid0100Resp = execLogged("0100", timeoutMs = 6000L)
             pids00 = ObdParser.parseSupportedPids(pid0100Resp, 0)
             if (pids00.isEmpty()) {
                 throw IOException(
                     "ECU did not respond on ${protocolPref.displayName} (0100 -> ${pid0100Resp.trim()}). " +
-                        "Verify ignition is ON or switch protocol to Auto + K-Line Fallback."
+                        "Verify ignition is ON or switch protocol to Auto K-Line."
                 )
             }
         }
 
-        // Read active protocol details
         val dpResp = execLogged("ATDP", timeoutMs = 1500L)
         val dpnResp = execLogged("ATDPN", timeoutMs = 1500L)
         val activeProtocol = ObdParser.cleanResponse(dpResp, "ATDP")
@@ -132,7 +105,6 @@ class Elm327Session(
             "Active protocol: $activeProtocol (code=$dpnClean, CAN=$isCanProtocol)"
         )
 
-        // Gather 0120 and 0140 PID bitmasks if indicated
         val allSupported = LinkedHashSet<String>()
         allSupported.addAll(pids00)
 
@@ -149,14 +121,12 @@ class Elm327Session(
         supportsPid42Voltage = "42" in allSupported
         logger(LogLevel.INFO, "Supported PIDs (${allSupported.size}): ${allSupported.joinToString(",")}")
 
-        // Read initial barometric pressure if supported
         var baroKpa: Float? = null
         if ("33" in allSupported) {
             val baroResp = execLogged("0133", timeoutMs = 2000L)
             baroKpa = ObdParser.parseBaroKpa(baroResp)
         }
 
-        // Read initial MIL & DTC count
         var milOn = false
         var dtcCount = 0
         if (allSupported.isEmpty() || "01" in allSupported) {
@@ -168,7 +138,7 @@ class Elm327Session(
             }
         }
 
-        return InitResult(
+        return ObdInitResult(
             adapterVersion = adapterVersion,
             activeProtocol = activeProtocol,
             isCanProtocol = isCanProtocol,
@@ -179,7 +149,7 @@ class Elm327Session(
         )
     }
 
-    suspend fun pollCycle(cycleIndex: Long): PollSnapshot {
+    override suspend fun pollCycle(cycleIndex: Long): ObdPollSnapshot {
         val logThisCycle = !loggedFirstPollCycle || verbosePollLogging
 
         val mapKpa = if (isPidEligible("0B")) {
@@ -251,7 +221,7 @@ class Elm327Session(
             loggedFirstPollCycle = true
         }
 
-        return PollSnapshot(
+        return ObdPollSnapshot(
             mapKpa = mapKpa,
             baroKpa = baroKpa,
             iatCelsius = iatC,
@@ -267,7 +237,7 @@ class Elm327Session(
         )
     }
 
-    suspend fun scanDtcs(): Triple<Boolean, Int, List<DtcEntry>> {
+    override suspend fun scanDtcs(): Triple<Boolean, Int, List<DtcEntry>> {
         logger(LogLevel.INFO, "Scanning engine fault codes (Mode 0101, 03, 07, 0A)...")
 
         var milOn = false
@@ -297,7 +267,6 @@ class Elm327Session(
             }
         }
 
-        // Mode 0A (Permanent DTCs) - optional, typically unsupported on pre-2010 K-Line ECUs
         val permRaw = execLogged("0A", timeoutMs = 2500L)
         if (!ObdParser.hasError(permRaw)) {
             val permCodes = ObdParser.parseDtcs(permRaw, "4A", isCanProtocol)
@@ -315,7 +284,7 @@ class Elm327Session(
         return Triple(milOn, reportedCount, entries)
     }
 
-    suspend fun clearDtcs(): Boolean {
+    override suspend fun clearDtcs(): Boolean {
         logger(LogLevel.WARN, "Sending Mode 04 to clear fault codes and reset MIL...")
         val resp = execLogged("04", timeoutMs = 5000L)
         val lines = ObdParser.cleanResponse(resp, "04")
@@ -330,11 +299,13 @@ class Elm327Session(
         return ok
     }
 
-    suspend fun sendRawCommand(command: String): String {
+    override suspend fun sendRawCommand(command: String): String {
         return execLogged(command, timeoutMs = 4000L)
     }
 
-    fun close() {
+    override suspend fun keepAliveIfIdle(): Boolean = true
+
+    override fun close() {
         transport.close()
     }
 

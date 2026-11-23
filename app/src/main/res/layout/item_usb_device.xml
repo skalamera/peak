@@ -3,12 +3,16 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginBottom="6dp"
-    android:background="@drawable/bg_tab_pill"
+    android:background="@drawable/bg_input_box"
     android:clickable="true"
     android:focusable="true"
     android:gravity="center_vertical"
+    android:minHeight="48dp"
     android:orientation="horizontal"
-    android:padding="10dp">
+    android:paddingLeft="10dp"
+    android:paddingTop="8dp"
+    android:paddingRight="10dp"
+    android:paddingBottom="8dp">
 
     <LinearLayout
         android:layout_width="0dp"
@@ -17,36 +21,41 @@
         android:orientation="vertical">
 
         <TextView
-            android:id="@+id/tvBtName"
+            android:id="@+id/tvUsbName"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="OBDII"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="Galletto FTDI USB-Serial"
             android:textColor="@color/text_primary"
-            android:textSize="14sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/tvBtAddress"
+            android:id="@+id/tvUsbDetail"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="00:1D:A5:00:12:34"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="VID:0403 PID:6001 • /dev/bus/usb/001/002"
+            android:textColor="@color/text_muted"
+            android:textSize="11sp"
             android:typeface="monospace" />
     </LinearLayout>
 
     <TextView
-        android:id="@+id/tvBtBadge"
+        android:id="@+id/tvUsbBadge"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_input_box"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_btn_secondary"
         android:paddingLeft="8dp"
         android:paddingTop="3dp"
         android:paddingRight="8dp"
         android:paddingBottom="3dp"
-        android:text="PAIRED"
-        android:textColor="@color/accent_amber"
-        android:textSize="11sp"
+        android:text="FTDI READY"
+        android:textColor="@color/accent_cyan"
+        android:textSize="10sp"
         android:textStyle="bold" />
 
 </LinearLayout>

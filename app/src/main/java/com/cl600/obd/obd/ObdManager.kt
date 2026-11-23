@@ -1,7 +1,7 @@
 package com.cl600.obd.obd
 
-import android.bluetooth.BluetoothAdapter
 import android.content.Context
+import android.hardware.usb.UsbManager
 import com.cl600.obd.model.ConnectionConfig
 import com.cl600.obd.model.ConnectionState
 import com.cl600.obd.model.DtcEntry
@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
+import java.util.Locale
 
 object ObdManager {
 
@@ -33,9 +34,14 @@ object ObdManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
 
+    private var appContext: Context? = null
     private var prefs: AppPreferences? = null
-    private var activeSession: Elm327Session? = null
+    private var activeSession: ObdSession? = null
     private var connectionJob: Job? = null
+    private var keepAliveJob: Job? = null
+
+    @Volatile
+    private var pendingUsbConnect: Boolean = false
 
     private val _config = MutableStateFlow(ConnectionConfig())
     val config: StateFlow<ConnectionConfig> = _config.asStateFlow()
@@ -68,12 +74,14 @@ object ObdManager {
 
     fun init(context: Context) {
         if (prefs == null) {
-            val appPrefs = AppPreferences(context.applicationContext)
+            val appCtx = context.applicationContext
+            appContext = appCtx
+            val appPrefs = AppPreferences(appCtx)
             prefs = appPrefs
             val loaded = appPrefs.loadConfig()
             _config.value = loaded
             recomputeEffectiveBaro()
-            appendLog(LogLevel.INFO, "CL600 OBD initialized (minSdk 19 compatible)")
+            appendLog(LogLevel.INFO, "CL600 OBD initialized (USB K-Line Galletto + Wi-Fi ELM327)")
         }
     }
 
@@ -104,13 +112,6 @@ object ObdManager {
             if (overrideTransport != null) it.copy(transportType = overrideTransport) else it
         }
 
-        if (cfg.transportType == TransportType.BLUETOOTH && cfg.bluetoothAddress.isBlank()) {
-            val msg = "No Bluetooth device selected. Pick OBDII from the paired list or enter its MAC address."
-            appendLog(LogLevel.ERROR, msg)
-            _connectionState.value = ConnectionState.Error(msg)
-            return
-        }
-
         if (cfg.transportType == TransportType.WIFI && cfg.wifiHost.isBlank()) {
             val msg = "Wi-Fi host IP cannot be blank (ELM327 Wi-Fi adapters typically use 192.168.0.10)."
             appendLog(LogLevel.ERROR, msg)
@@ -118,6 +119,7 @@ object ObdManager {
             return
         }
 
+        pendingUsbConnect = false
         connectionJob?.cancel()
         connectionJob = scope.launch {
             cleanupSession()
@@ -127,45 +129,117 @@ object ObdManager {
                 baroSource = if (_config.value.manualBaroKpa != null) "KOEO Calibrated" else "Default (101.3 kPa)"
             )
 
-            val transport: ObdTransport = when (cfg.transportType) {
-                TransportType.BLUETOOTH -> {
-                    val btAdapter = BluetoothAdapter.getDefaultAdapter()
-                    if (btAdapter == null) {
-                        val err = "This head unit reports no Android Bluetooth adapter (BluetoothAdapter is null)."
+            val session: ObdSession
+            val transportLabel: String
+
+            when (cfg.transportType) {
+                TransportType.USB_KLINE -> {
+                    val ctx = appContext
+                    val usbManager = ctx?.getSystemService(Context.USB_SERVICE) as? UsbManager
+                    if (ctx == null || usbManager == null) {
+                        val err = "Android UsbManager service unavailable on this device."
                         appendLog(LogLevel.ERROR, err)
                         _connectionState.value = ConnectionState.Error(err)
                         return@launch
                     }
-                    if (!btAdapter.isEnabled) {
-                        val err = "Bluetooth is turned OFF on this head unit. Enable Bluetooth or use Demo/Wi-Fi mode."
+
+                    val drivers = UsbSerialHelper.findSupportedDrivers(ctx)
+                    val selectedDriver = drivers.firstOrNull {
+                        cfg.usbDeviceName.isNotBlank() && it.device.deviceName == cfg.usbDeviceName
+                    } ?: drivers.firstOrNull()
+
+                    if (selectedDriver == null) {
+                        val rawCount = usbManager.deviceList.size
+                        if (rawCount > 0) {
+                            usbManager.deviceList.values.forEach { dev ->
+                                appendLog(
+                                    LogLevel.WARN,
+                                    String.format(
+                                        Locale.US,
+                                        "Attached USB device unsupported: %s VID:%04X PID:%04X",
+                                        dev.deviceName,
+                                        dev.vendorId,
+                                        dev.productId
+                                    )
+                                )
+                            }
+                        }
+                        val err = "No Galletto / FTDI USB cable detected. Plug into a rear 4-pin USB data pigtail (not charge-only) and turn ignition ON (Pos 2)."
                         appendLog(LogLevel.ERROR, err)
                         _connectionState.value = ConnectionState.Error(err)
                         return@launch
                     }
-                    BluetoothObdTransport(
-                        adapter = btAdapter,
-                        deviceAddress = cfg.bluetoothAddress.trim(),
-                        deviceLabel = cfg.bluetoothName.trim(),
-                        strategy = cfg.btStrategy
-                    )
+
+                    val usbDevice = selectedDriver.device
+                    if (!usbManager.hasPermission(usbDevice)) {
+                        pendingUsbConnect = true
+                        _connectionState.value = ConnectionState.Connecting("Waiting for USB permission...")
+                        appendLog(
+                            LogLevel.INFO,
+                            String.format(
+                                Locale.US,
+                                "Requesting Android USB permission for %s (VID:%04X PID:%04X)",
+                                usbDevice.deviceName,
+                                usbDevice.vendorId,
+                                usbDevice.productId
+                            )
+                        )
+                        UsbSerialHelper.requestPermission(ctx, usbDevice)
+                        return@launch
+                    }
+
+                    val port = AndroidUsbKlinePort(usbManager, selectedDriver)
+                    transportLabel = port.displayName
+                    session = KlineSession(
+                        port = port,
+                        protocolPref = cfg.obdProtocol,
+                        logger = { level, msg -> appendLog(level, msg) }
+                    ).also {
+                        it.verbosePollLogging = _verbosePollLogs.value
+                    }
                 }
 
-                TransportType.WIFI -> WifiObdTransport(cfg.wifiHost.trim(), cfg.wifiPort)
-                TransportType.DEMO -> SimulatedObdTransport()
+                TransportType.WIFI -> {
+                    val transport = WifiObdTransport(cfg.wifiHost.trim(), cfg.wifiPort, appContext)
+                    transportLabel = transport.displayName
+                    _connectionState.value = ConnectionState.Connecting(transportLabel)
+                    try {
+                        transport.connect { level, msg -> appendLog(level, msg) }
+                    } catch (t: Throwable) {
+                        val msg = t.message ?: t.javaClass.simpleName
+                        appendLog(LogLevel.ERROR, "Connection error: $msg")
+                        _connectionState.value = ConnectionState.Error(msg)
+                        transport.close()
+                        return@launch
+                    }
+                    session = Elm327Session(
+                        transport = transport,
+                        protocolPref = cfg.obdProtocol,
+                        logger = { level, msg -> appendLog(level, msg) }
+                    ).also {
+                        it.verbosePollLogging = _verbosePollLogs.value
+                    }
+                }
+
+                TransportType.DEMO -> {
+                    val transport = SimulatedObdTransport()
+                    transportLabel = transport.displayName
+                    _connectionState.value = ConnectionState.Connecting(transportLabel)
+                    transport.connect { level, msg -> appendLog(level, msg) }
+                    session = Elm327Session(
+                        transport = transport,
+                        protocolPref = cfg.obdProtocol,
+                        logger = { level, msg -> appendLog(level, msg) }
+                    ).also {
+                        it.verbosePollLogging = _verbosePollLogs.value
+                    }
+                }
             }
 
             try {
-                _connectionState.value = ConnectionState.Connecting(transport.displayName)
-                transport.connect { level, msg -> appendLog(level, msg) }
-
-                _connectionState.value = ConnectionState.Initializing("ELM327 & ECU handshake")
-                val session = Elm327Session(
-                    transport = transport,
-                    protocolPref = cfg.obdProtocol,
-                    logger = { level, msg -> appendLog(level, msg) }
-                ).also {
-                    it.verbosePollLogging = _verbosePollLogs.value
-                }
+                _connectionState.value = ConnectionState.Initializing(
+                    if (session.isDirectKline) "K-Line ECU handshake ($transportLabel)" else "ELM327 & ECU handshake"
+                )
 
                 val initResult = sessionMutex.withLock {
                     activeSession = session
@@ -189,12 +263,17 @@ object ObdManager {
                 _connectionState.value = if (cfg.transportType == TransportType.DEMO) {
                     ConnectionState.Demo
                 } else {
-                    ConnectionState.Connected(transport.displayName, initResult.activeProtocol)
+                    ConnectionState.Connected(transportLabel, initResult.activeProtocol)
                 }
 
-                // Auto-scan DTCs once in Demo mode or if MIL reports codes
+                if (session.isDirectKline) {
+                    startKlineKeepAlive(session)
+                }
+
                 if (cfg.transportType == TransportType.DEMO || initResult.dtcCountReported > 0) {
-                    runDtcScanLocked(session)
+                    sessionMutex.withLock {
+                        runDtcScanLocked(session)
+                    }
                 }
 
                 runPollingLoop(session)
@@ -209,11 +288,43 @@ object ObdManager {
         }
     }
 
+    fun onUsbPermissionResult(granted: Boolean, deviceName: String?) {
+        if (granted) {
+            appendLog(LogLevel.INFO, "USB permission granted${deviceName?.let { " ($it)" } ?: ""}.")
+            if (pendingUsbConnect) {
+                pendingUsbConnect = false
+                connect(TransportType.USB_KLINE)
+            }
+        } else {
+            pendingUsbConnect = false
+            val msg = "USB permission denied for Galletto cable."
+            appendLog(LogLevel.ERROR, msg)
+            _connectionState.value = ConnectionState.Error(msg)
+        }
+    }
+
+    fun handleUsbDetached(deviceName: String?) {
+        pendingUsbConnect = false
+        val session = activeSession
+        if (session?.isDirectKline == true || _connectionState.value is ConnectionState.Connecting) {
+            connectionJob?.cancel()
+            connectionJob = null
+            scope.launch {
+                cleanupSession()
+                _connectionState.value = ConnectionState.Disconnected
+                appendLog(LogLevel.WARN, "USB K-Line cable unplugged${deviceName?.let { " ($it)" } ?: ""}")
+            }
+        } else {
+            appendLog(LogLevel.INFO, "USB device unplugged${deviceName?.let { " ($it)" } ?: ""}")
+        }
+    }
+
     fun startDemo() {
         connect(overrideTransport = TransportType.DEMO)
     }
 
     fun disconnect() {
+        pendingUsbConnect = false
         connectionJob?.cancel()
         connectionJob = null
         scope.launch {
@@ -279,7 +390,7 @@ object ObdManager {
         if (trimmed.isEmpty()) return
         val session = activeSession
         if (session == null || !session.isConnected) {
-            appendLog(LogLevel.WARN, "Cannot send '$trimmed': not connected to an adapter or Demo.")
+            appendLog(LogLevel.WARN, "Cannot send '$trimmed': not connected to Galletto cable, Wi-Fi adapter, or Demo.")
             return
         }
         scope.launch {
@@ -381,7 +492,31 @@ object ObdManager {
         }
     }
 
-    private suspend fun runDtcScanLocked(session: Elm327Session) {
+    private fun startKlineKeepAlive(session: ObdSession) {
+        keepAliveJob?.cancel()
+        keepAliveJob = scope.launch {
+            while (isActive && session.isConnected) {
+                delay(500L)
+                try {
+                    sessionMutex.withLock {
+                        if (session.isConnected) {
+                            session.keepAliveIfIdle()
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    val msg = t.message ?: t.javaClass.simpleName
+                    appendLog(LogLevel.ERROR, "K-Line keep-alive error: $msg")
+                    _connectionState.value = ConnectionState.Error(msg)
+                    cleanupSession()
+                    break
+                }
+            }
+        }
+    }
+
+    private suspend fun runDtcScanLocked(session: ObdSession) {
         val (mil, reportedCount, dtcs) = session.scanDtcs()
         _milOn.value = mil
         _dtcList.value = dtcs
@@ -393,7 +528,7 @@ object ObdManager {
         }
     }
 
-    private suspend fun runPollingLoop(session: Elm327Session) {
+    private suspend fun runPollingLoop(session: ObdSession) {
         var cycle = 0L
         var hzWindowStart = System.currentTimeMillis()
         var hzCount = 0
@@ -501,6 +636,8 @@ object ObdManager {
     }
 
     private suspend fun cleanupSession() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
         sessionMutex.withLock {
             activeSession?.close()
             activeSession = null

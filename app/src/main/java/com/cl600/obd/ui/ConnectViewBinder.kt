@@ -15,36 +15,30 @@ import androidx.appcompat.widget.SwitchCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.cl600.obd.R
-import com.cl600.obd.model.BtStrategy
 import com.cl600.obd.model.ConnectionConfig
 import com.cl600.obd.model.ConnectionState
 import com.cl600.obd.model.ObdProtocol
 import com.cl600.obd.model.ObdTelemetry
 import com.cl600.obd.model.TransportType
 import com.cl600.obd.obd.ObdManager
-import java.util.Locale
+import com.cl600.obd.obd.UsbDeviceUiItem
 
 class ConnectViewBinder(
     root: View,
     private val context: Context,
-    private val onRequestBtRefresh: () -> Unit,
-    private val onRequestBtScan: () -> Unit,
+    private val onRequestUsbScan: () -> Unit,
     private val onRequestConnect: (TransportType) -> Unit
 ) {
     private val btnMainConnect: Button = root.findViewById(R.id.btnMainConnect)
     private val btnTryDemo: Button = root.findViewById(R.id.btnTryDemo)
     private val tvConnectDetail: TextView = root.findViewById(R.id.tvConnectStateDetail)
     private val rgTransport: RadioGroup = root.findViewById(R.id.rgTransport)
-    private val rbBluetooth: RadioButton = root.findViewById(R.id.rbBluetooth)
+    private val rbUsbKline: RadioButton = root.findViewById(R.id.rbUsbKline)
     private val rbWifi: RadioButton = root.findViewById(R.id.rbWifi)
-    private val layoutBtConfig: View = root.findViewById(R.id.layoutBtConfig)
-    private val btnRefreshPaired: Button = root.findViewById(R.id.btnRefreshPaired)
-    private val btnScanNearby: Button = root.findViewById(R.id.btnScanNearby)
-    private val rvBtDevices: RecyclerView = root.findViewById(R.id.rvBtDevices)
-    private val tvNoBtDevices: TextView = root.findViewById(R.id.tvNoBtDevices)
-    private val etManualMac: EditText = root.findViewById(R.id.etManualMac)
-    private val btnUseManualMac: Button = root.findViewById(R.id.btnUseManualMac)
-    private val spinnerBtStrategy: Spinner = root.findViewById(R.id.spinnerBtStrategy)
+    private val layoutUsbConfig: View = root.findViewById(R.id.layoutUsbConfig)
+    private val btnScanUsb: Button = root.findViewById(R.id.btnScanUsb)
+    private val rvUsbDevices: RecyclerView = root.findViewById(R.id.rvUsbDevices)
+    private val tvNoUsbDevices: TextView = root.findViewById(R.id.tvNoUsbDevices)
     private val layoutWifiConfig: View = root.findViewById(R.id.layoutWifiConfig)
     private val etWifiHost: EditText = root.findViewById(R.id.etWifiHost)
     private val etWifiPort: EditText = root.findViewById(R.id.etWifiPort)
@@ -54,33 +48,26 @@ class ConnectViewBinder(
     private val tvBaroInfo: TextView = root.findViewById(R.id.tvBaroInfo)
     private val switchAutoConnect: SwitchCompat = root.findViewById(R.id.switchAutoConnect)
 
-    private val btAdapter: BtDeviceAdapter
+    private val usbAdapter: UsbDeviceAdapter
     private var suppressCallbacks = false
     private var currentState: ConnectionState = ConnectionState.Disconnected
 
     init {
-        btAdapter = BtDeviceAdapter { item ->
-            etManualMac.setText(item.address)
+        usbAdapter = UsbDeviceAdapter { item ->
             ObdManager.updateConfig {
                 it.copy(
-                    bluetoothAddress = item.address,
-                    bluetoothName = item.name,
-                    transportType = TransportType.BLUETOOTH
+                    usbDeviceName = item.deviceName,
+                    transportType = TransportType.USB_KLINE
                 )
             }
-            Toast.makeText(context, "Selected ${item.name} (${item.address})", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                "Selected ${item.displayTitle} (${item.vidPidLabel})",
+                Toast.LENGTH_SHORT
+            ).show()
         }
-        rvBtDevices.layoutManager = LinearLayoutManager(context)
-        rvBtDevices.adapter = btAdapter
-
-        val strategyAdapter = ArrayAdapter(
-            context,
-            R.layout.item_spinner_text,
-            BtStrategy.values().map { it.displayName }
-        ).apply {
-            setDropDownViewResource(R.layout.item_spinner_dropdown)
-        }
-        spinnerBtStrategy.adapter = strategyAdapter
+        rvUsbDevices.layoutManager = LinearLayoutManager(context)
+        rvUsbDevices.adapter = usbAdapter
 
         val protoAdapter = ArrayAdapter(
             context,
@@ -96,7 +83,7 @@ class ConnectViewBinder(
                 ObdManager.disconnect()
             } else {
                 saveWifiInputsIfNeeded()
-                val transport = if (rbWifi.isChecked) TransportType.WIFI else TransportType.BLUETOOTH
+                val transport = if (rbWifi.isChecked) TransportType.WIFI else TransportType.USB_KLINE
                 ObdManager.updateConfig { it.copy(transportType = transport) }
                 onRequestConnect(transport)
             }
@@ -108,49 +95,13 @@ class ConnectViewBinder(
 
         rgTransport.setOnCheckedChangeListener { _, checkedId ->
             if (suppressCallbacks) return@setOnCheckedChangeListener
-            val transport = if (checkedId == R.id.rbWifi) TransportType.WIFI else TransportType.BLUETOOTH
+            val transport = if (checkedId == R.id.rbWifi) TransportType.WIFI else TransportType.USB_KLINE
             ObdManager.updateConfig { it.copy(transportType = transport) }
             updateTransportVisibility(transport)
         }
 
-        btnRefreshPaired.setOnClickListener {
-            onRequestBtRefresh()
-        }
-
-        btnScanNearby.setOnClickListener {
-            onRequestBtScan()
-        }
-
-        btnUseManualMac.setOnClickListener {
-            val rawMac = etManualMac.text.toString().trim().uppercase(Locale.US)
-            if (!isValidMac(rawMac)) {
-                Toast.makeText(
-                    context,
-                    "Enter MAC in XX:XX:XX:XX:XX:XX format",
-                    Toast.LENGTH_SHORT
-                ).show()
-                return@setOnClickListener
-            }
-            ObdManager.updateConfig {
-                it.copy(
-                    bluetoothAddress = rawMac,
-                    bluetoothName = it.bluetoothName.ifBlank { "Manual OBDII" },
-                    transportType = TransportType.BLUETOOTH
-                )
-            }
-            Toast.makeText(context, "Saved MAC $rawMac", Toast.LENGTH_SHORT).show()
-        }
-
-        spinnerBtStrategy.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (suppressCallbacks) return
-                val selected = BtStrategy.values()[position]
-                if (ObdManager.config.value.btStrategy != selected) {
-                    ObdManager.updateConfig { it.copy(btStrategy = selected) }
-                }
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        btnScanUsb.setOnClickListener {
+            onRequestUsbScan()
         }
 
         spinnerProtocol.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -186,14 +137,14 @@ class ConnectViewBinder(
         }
     }
 
-    fun updateBluetoothDevices(devices: List<BtDeviceUiItem>, selectedMac: String) {
-        btAdapter.submitList(devices, selectedMac)
+    fun updateUsbDevices(devices: List<UsbDeviceUiItem>, selectedDeviceName: String) {
+        usbAdapter.submitList(devices, selectedDeviceName)
         if (devices.isEmpty()) {
-            rvBtDevices.visibility = View.GONE
-            tvNoBtDevices.visibility = View.VISIBLE
+            rvUsbDevices.visibility = View.GONE
+            tvNoUsbDevices.visibility = View.VISIBLE
         } else {
-            rvBtDevices.visibility = View.VISIBLE
-            tvNoBtDevices.visibility = View.GONE
+            rvUsbDevices.visibility = View.VISIBLE
+            tvNoUsbDevices.visibility = View.GONE
         }
     }
 
@@ -204,13 +155,10 @@ class ConnectViewBinder(
         if (config.transportType == TransportType.WIFI) {
             rbWifi.isChecked = true
         } else {
-            rbBluetooth.isChecked = true
+            rbUsbKline.isChecked = true
         }
         updateTransportVisibility(config.transportType)
 
-        if (!etManualMac.hasFocus() && etManualMac.text.toString() != config.bluetoothAddress) {
-            etManualMac.setText(config.bluetoothAddress)
-        }
         if (!etWifiHost.hasFocus() && etWifiHost.text.toString() != config.wifiHost) {
             etWifiHost.setText(config.wifiHost)
         }
@@ -219,8 +167,7 @@ class ConnectViewBinder(
             etWifiPort.setText(portStr)
         }
 
-        btAdapter.setSelectedMac(config.bluetoothAddress)
-        spinnerBtStrategy.setSelection(config.btStrategy.ordinal)
+        usbAdapter.setSelectedDeviceName(config.usbDeviceName)
         spinnerProtocol.setSelection(config.obdProtocol.ordinal)
         switchAutoConnect.isChecked = config.autoConnect
 
@@ -231,7 +178,7 @@ class ConnectViewBinder(
                 val target = if (config.transportType == TransportType.WIFI) {
                     "Wi-Fi ${config.wifiHost}:${config.wifiPort}"
                 } else {
-                    config.bluetoothAddress.ifBlank { "No BT device selected" }
+                    config.usbDeviceName.ifBlank { "Galletto 1260 USB K-Line" }
                 }
                 "Disconnected  ($target)"
             }
@@ -254,10 +201,10 @@ class ConnectViewBinder(
 
     private fun updateTransportVisibility(transport: TransportType) {
         if (transport == TransportType.WIFI) {
-            layoutBtConfig.visibility = View.GONE
+            layoutUsbConfig.visibility = View.GONE
             layoutWifiConfig.visibility = View.VISIBLE
         } else {
-            layoutBtConfig.visibility = View.VISIBLE
+            layoutUsbConfig.visibility = View.VISIBLE
             layoutWifiConfig.visibility = View.GONE
         }
     }
@@ -268,9 +215,5 @@ class ConnectViewBinder(
         ObdManager.updateConfig {
             it.copy(wifiHost = host, wifiPort = port)
         }
-    }
-
-    private fun isValidMac(mac: String): Boolean {
-        return Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$").matches(mac)
     }
 }

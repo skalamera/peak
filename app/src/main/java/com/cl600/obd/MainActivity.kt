@@ -1,15 +1,12 @@
 package com.cl600.obd
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.graphics.drawable.GradientDrawable
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -19,14 +16,13 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.cl600.obd.model.ConnectionState
 import com.cl600.obd.model.LogLevel
 import com.cl600.obd.model.TransportType
 import com.cl600.obd.model.UnitSystem
 import com.cl600.obd.obd.ObdManager
-import com.cl600.obd.ui.BtDeviceUiItem
+import com.cl600.obd.obd.UsbSerialHelper
 import com.cl600.obd.ui.CodesViewBinder
 import com.cl600.obd.ui.ConnectViewBinder
 import com.cl600.obd.ui.GaugesViewBinder
@@ -37,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -49,8 +46,6 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val KEY_ACTIVE_TAB = "active_tab"
-        const val REQ_BT_CONNECT = 1001
-        const val REQ_BT_SCAN = 1002
     }
 
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -76,35 +71,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logBinder: LogViewBinder
 
     private var activeTab = Tab.GAUGES
-    private var pendingActionAfterPermission: (() -> Unit)? = null
-    private val discoveredDevices = LinkedHashMap<String, BtDeviceUiItem>()
-    private var btReceiverRegistered = false
+    private var usbReceiversRegistered = false
 
-    private val btDiscoveryReceiver = object : BroadcastReceiver() {
-        @SuppressLint("MissingPermission")
+    private val usbPermissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != UsbSerialHelper.ACTION_USB_PERMISSION) return
+            val device = extractUsbDevice(intent)
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            refreshUsbDeviceList(logDevices = false)
+            ObdManager.onUsbPermissionResult(granted, device?.deviceName)
+        }
+    }
+
+    private val usbAttachDetachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                BluetoothDevice.ACTION_FOUND -> {
-                    val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    }
-                    if (device != null) {
-                        val addr = device.address ?: return
-                        val name = safeDeviceName(device)
-                        discoveredDevices[addr.uppercase()] = BtDeviceUiItem(
-                            name = name,
-                            address = addr,
-                            badge = "FOUND",
-                            isObdCandidate = isObdName(name)
-                        )
-                        refreshBluetoothDeviceList()
-                    }
-                }
-                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    ObdManager.appendLog(LogLevel.INFO, "Bluetooth nearby scan finished")
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> handleUsbAttachedIntent(intent)
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    val device = extractUsbDevice(intent)
+                    refreshUsbDeviceList(logDevices = false)
+                    ObdManager.handleUsbDetached(device?.deviceName)
                 }
             }
         }
@@ -143,9 +129,8 @@ class MainActivity : AppCompatActivity() {
         connectBinder = ConnectViewBinder(
             root = viewConnect,
             context = this,
-            onRequestBtRefresh = { ensureBtConnectPermission { refreshBluetoothDeviceList(autoSelectObd = false) } },
-            onRequestBtScan = { startBluetoothDiscovery() },
-            onRequestConnect = { transport -> handleConnectRequest(transport) }
+            onRequestUsbScan = { refreshUsbDeviceList(logDevices = true) },
+            onRequestConnect = { transport -> ObdManager.connect(transport) }
         )
         logBinder = LogViewBinder(viewLog, this)
 
@@ -167,15 +152,25 @@ class MainActivity : AppCompatActivity() {
         val savedIdx = savedInstanceState?.getInt(KEY_ACTIVE_TAB, Tab.GAUGES.index) ?: Tab.GAUGES.index
         selectTab(Tab.values().getOrElse(savedIdx) { Tab.GAUGES })
 
-        registerDiscoveryReceiver()
-        if (hasBtConnectPermission()) {
-            refreshBluetoothDeviceList(autoSelectObd = true)
-        }
+        registerUsbReceivers()
+        refreshUsbDeviceList(logDevices = true)
         observeManagerFlows()
 
+        handleUsbAttachedIntent(intent)
         if (savedInstanceState == null && ObdManager.config.value.autoConnect && !ObdManager.connectionState.value.isActiveOrConnecting()) {
-            handleConnectRequest(ObdManager.config.value.transportType)
+            ObdManager.connect(ObdManager.config.value.transportType)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshUsbDeviceList(logDevices = false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUsbAttachedIntent(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -185,12 +180,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         uiScope.cancel()
-        if (btReceiverRegistered) {
+        if (usbReceiversRegistered) {
             try {
-                unregisterReceiver(btDiscoveryReceiver)
+                unregisterReceiver(usbPermissionReceiver)
             } catch (_: Exception) {
             }
-            btReceiverRegistered = false
+            try {
+                unregisterReceiver(usbAttachDetachReceiver)
+            } catch (_: Exception) {
+            }
+            usbReceiversRegistered = false
         }
         super.onDestroy()
     }
@@ -247,10 +246,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         uiScope.launch {
-            combine(ObdManager.logs, ObdManager.verbosePollLogs) { logs, verbose ->
-                Pair(logs, verbose)
-            }.collect { (logs, verbose) ->
-                logBinder.render(logs, verbose)
+            combine(
+                ObdManager.logs,
+                ObdManager.verbosePollLogs,
+                ObdManager.config,
+                ObdManager.connectionState
+            ) { logs, verbose, config, state ->
+                val effectiveTransport = if (state is ConnectionState.Demo) {
+                    TransportType.DEMO
+                } else {
+                    config.transportType
+                }
+                Triple(logs, verbose, effectiveTransport)
+            }.collect { (logs, verbose, transport) ->
+                logBinder.render(logs, verbose, transport)
             }
         }
     }
@@ -270,195 +279,94 @@ class MainActivity : AppCompatActivity() {
         tvStatusBadge.setTextColor(color)
     }
 
-    private fun handleConnectRequest(transport: TransportType) {
-        if (transport == TransportType.BLUETOOTH) {
-            ensureBtConnectPermission {
-                refreshBluetoothDeviceList(autoSelectObd = true)
-                ObdManager.connect(TransportType.BLUETOOTH)
-            }
-        } else {
-            ObdManager.connect(transport)
-        }
-    }
+    private fun refreshUsbDeviceList(logDevices: Boolean) {
+        val (serialItems, rawDevices) = UsbSerialHelper.listUsbDevices(this)
+        val cfg = ObdManager.config.value
 
-    @SuppressLint("MissingPermission")
-    private fun refreshBluetoothDeviceList(autoSelectObd: Boolean = false) {
-        val adapter = BluetoothAdapter.getDefaultAdapter()
-        if (adapter == null) {
-            connectBinder.updateBluetoothDevices(emptyList(), ObdManager.config.value.bluetoothAddress)
-            return
+        if (serialItems.isNotEmpty() &&
+            (cfg.usbDeviceName.isBlank() || serialItems.none { it.deviceName == cfg.usbDeviceName })
+        ) {
+            val preferred = serialItems.firstOrNull { it.isFtdi } ?: serialItems.first()
+            ObdManager.updateConfig { it.copy(usbDeviceName = preferred.deviceName) }
         }
 
-        if (!hasBtConnectPermission()) {
-            return
-        }
+        connectBinder.updateUsbDevices(serialItems, ObdManager.config.value.usbDeviceName)
 
-        val combined = LinkedHashMap<String, BtDeviceUiItem>()
-        try {
-            val bonded = adapter.bondedDevices ?: emptySet()
-            for (dev in bonded) {
-                val addr = dev.address ?: continue
-                val name = safeDeviceName(dev)
-                combined[addr.uppercase()] = BtDeviceUiItem(
-                    name = name,
-                    address = addr,
-                    badge = "PAIRED",
-                    isObdCandidate = isObdName(name)
-                )
-            }
-        } catch (se: SecurityException) {
-            ObdManager.appendLog(LogLevel.WARN, "Cannot read paired devices: ${se.message}")
-        }
-
-        for ((mac, item) in discoveredDevices) {
-            if (!combined.containsKey(mac)) {
-                combined[mac] = item
-            }
-        }
-
-        val sorted = combined.values.sortedWith(
-            compareByDescending<BtDeviceUiItem> { it.isObdCandidate }
-                .thenBy { it.name.lowercase() }
-        )
-
-        if (autoSelectObd && ObdManager.config.value.bluetoothAddress.isBlank()) {
-            val bestObd = sorted.firstOrNull { it.isObdCandidate }
-            if (bestObd != null) {
-                ObdManager.updateConfig {
-                    it.copy(bluetoothAddress = bestObd.address, bluetoothName = bestObd.name)
+        if (logDevices) {
+            if (serialItems.isNotEmpty()) {
+                serialItems.forEach { item ->
+                    ObdManager.appendLog(
+                        LogLevel.INFO,
+                        "USB K-Line candidate: ${item.displayTitle} (${item.vidPidLabel}, ${item.deviceName}, perm=${item.hasPermission})"
+                    )
                 }
-                ObdManager.appendLog(LogLevel.INFO, "Auto-selected paired adapter: ${bestObd.name} (${bestObd.address})")
+            } else if (rawDevices.isNotEmpty()) {
+                rawDevices.forEach { dev ->
+                    ObdManager.appendLog(
+                        LogLevel.WARN,
+                        String.format(
+                            Locale.US,
+                            "USB device (no serial driver): %s VID:%04X PID:%04X",
+                            dev.deviceName,
+                            dev.vendorId,
+                            dev.productId
+                        )
+                    )
+                }
+            } else {
+                ObdManager.appendLog(LogLevel.INFO, "USB scan: no USB OTG serial cable currently attached")
             }
         }
-
-        connectBinder.updateBluetoothDevices(sorted, ObdManager.config.value.bluetoothAddress)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun startBluetoothDiscovery() {
-        ensureBtScanPermission {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            if (adapter == null) {
-                Toast.makeText(this, "No Bluetooth adapter found", Toast.LENGTH_SHORT).show()
-                return@ensureBtScanPermission
-            }
-            if (!adapter.isEnabled) {
-                Toast.makeText(this, "Turn Bluetooth ON in head unit settings first", Toast.LENGTH_SHORT).show()
-                return@ensureBtScanPermission
-            }
-            try {
-                if (adapter.isDiscovering) adapter.cancelDiscovery()
-                val started = adapter.startDiscovery()
-                ObdManager.appendLog(
-                    if (started) LogLevel.INFO else LogLevel.WARN,
-                    if (started) "Scanning for nearby Bluetooth devices..." else "Bluetooth scan failed to start"
+    private fun handleUsbAttachedIntent(intent: Intent?) {
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        val device = extractUsbDevice(intent)
+        refreshUsbDeviceList(logDevices = false)
+        if (device != null) {
+            ObdManager.appendLog(
+                LogLevel.INFO,
+                String.format(
+                    Locale.US,
+                    "USB cable attached: %s (VID:%04X PID:%04X)",
+                    device.deviceName,
+                    device.vendorId,
+                    device.productId
                 )
-                Toast.makeText(
-                    this,
-                    if (started) "Scanning nearby Bluetooth devices..." else "Scan could not start",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (se: SecurityException) {
-                ObdManager.appendLog(LogLevel.ERROR, "Bluetooth scan permission denied: ${se.message}")
-            }
-        }
-    }
-
-    private fun registerDiscoveryReceiver() {
-        if (btReceiverRegistered) return
-        val filter = IntentFilter().apply {
-            addAction(BluetoothDevice.ACTION_FOUND)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
-        }
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(btDiscoveryReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(btDiscoveryReceiver, filter)
-        }
-        btReceiverRegistered = true
-    }
-
-    private fun hasBtConnectPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-    }
-
-    private fun ensureBtConnectPermission(onGranted: () -> Unit) {
-        if (hasBtConnectPermission()) {
-            onGranted()
-            return
-        }
-        pendingActionAfterPermission = onGranted
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
-                REQ_BT_CONNECT
             )
         }
+        val cfg = ObdManager.config.value
+        if (cfg.autoConnect &&
+            cfg.transportType == TransportType.USB_KLINE &&
+            !ObdManager.connectionState.value.isActiveOrConnecting()
+        ) {
+            ObdManager.connect(TransportType.USB_KLINE)
+        }
     }
 
-    private fun ensureBtScanPermission(onGranted: () -> Unit) {
-        val missing = ArrayList<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                missing.add(Manifest.permission.BLUETOOTH_SCAN)
-            }
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                missing.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
+    private fun registerUsbReceivers() {
+        if (usbReceiversRegistered) return
+        val permFilter = IntentFilter(UsbSerialHelper.ACTION_USB_PERMISSION)
+        val usbFilter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
-
-        if (missing.isEmpty()) {
-            onGranted()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(usbPermissionReceiver, permFilter, RECEIVER_NOT_EXPORTED)
+            registerReceiver(usbAttachDetachReceiver, usbFilter, RECEIVER_EXPORTED)
         } else {
-            pendingActionAfterPermission = onGranted
-            ActivityCompat.requestPermissions(this, missing.toTypedArray(), REQ_BT_SCAN)
+            registerReceiver(usbPermissionReceiver, permFilter)
+            registerReceiver(usbAttachDetachReceiver, usbFilter)
         }
+        usbReceiversRegistered = true
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_BT_CONNECT || requestCode == REQ_BT_SCAN) {
-            val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            val action = pendingActionAfterPermission
-            pendingActionAfterPermission = null
-            if (allGranted) {
-                action?.invoke()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Bluetooth permission required to access paired/nearby OBDII adapters",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+    private fun extractUsbDevice(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun safeDeviceName(device: BluetoothDevice): String {
-        return try {
-            device.name ?: "Unnamed Device"
-        } catch (_: SecurityException) {
-            "Bluetooth Device"
-        }
-    }
-
-    private fun isObdName(name: String): Boolean {
-        val u = name.uppercase()
-        return u.contains("OBD") || u.contains("ELM") || u.contains("VLINK") ||
-            u.contains("VGATE") || u.contains("CAR") || u.contains("SCAN") || u.contains("KONNWEI")
     }
 }
