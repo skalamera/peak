@@ -39,6 +39,8 @@ class AnalogGaugeView @JvmOverloads constructor(
     private var minorDivisions: Int = 4
     private var zones: List<GaugeZone> = emptyList()
     private var warningThreshold: Float? = null
+    private var glowThreshold: Float? = null
+    private var glowColor: Int = Color.parseColor("#38BDF8")
     private var decimalPlaces: Int = 0
     private var showPlusSign: Boolean = false
     private var subTextFormatter: ((Float?, Float?) -> String?)? = null
@@ -54,6 +56,18 @@ class AnalogGaugeView @JvmOverloads constructor(
     private val sweepAngleDeg = 250f
 
     private val bgFacePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glowFacePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glowStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val glowSweepPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.BUTT
+    }
+    private val glowHubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+    }
     private val outerArchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -156,6 +170,8 @@ class AnalogGaugeView @JvmOverloads constructor(
         warningThreshold: Float? = null,
         decimalPlaces: Int = 0,
         showPlusSign: Boolean = false,
+        glowThreshold: Float? = null,
+        glowColor: Int = Color.parseColor("#38BDF8"),
         subTextFormatter: ((Float?, Float?) -> String?)? = null
     ) {
         this.title = title
@@ -168,8 +184,13 @@ class AnalogGaugeView @JvmOverloads constructor(
         this.warningThreshold = warningThreshold
         this.decimalPlaces = decimalPlaces
         this.showPlusSign = showPlusSign
+        this.glowThreshold = glowThreshold
+        this.glowColor = glowColor
         this.subTextFormatter = subTextFormatter
 
+        if (width > 0 && height > 0) {
+            rebuildShaders(width, height)
+        }
         if (currentValue == null) {
             animatedNeedleValue = minValue
         } else {
@@ -225,6 +246,10 @@ class AnalogGaugeView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || h <= 0) return
+        rebuildShaders(w, h)
+    }
+
+    private fun rebuildShaders(w: Int, h: Int) {
         val cx = w / 2f
         val cy = h * 0.52f
         val r = min(w, h) * 0.46f
@@ -235,6 +260,16 @@ class AnalogGaugeView @JvmOverloads constructor(
                     Color.parseColor("#0E0E10"),
                     Color.parseColor("#060607"),
                     Color.parseColor("#000000")
+                ),
+                floatArrayOf(0f, 0.72f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            glowFacePaint.shader = RadialGradient(
+                cx, cy, r,
+                intArrayOf(
+                    withAlpha(glowColor, 76),
+                    withAlpha(glowColor, 26),
+                    Color.TRANSPARENT
                 ),
                 floatArrayOf(0f, 0.72f, 1f),
                 Shader.TileMode.CLAMP
@@ -257,13 +292,45 @@ class AnalogGaugeView @JvmOverloads constructor(
             warningThreshold != null &&
             currentValue!! >= warningThreshold!!
 
-        // 1. Pure black dial face & signature Eurocharged clean white open arch
+        val glowThresh = glowThreshold
+        val glowIntensity = if (glowThresh != null &&
+            currentValue != null &&
+            !isAlert &&
+            animatedNeedleValue > glowThresh
+        ) {
+            val denom = ((warningThreshold ?: maxValue) - glowThresh).coerceAtLeast(1f)
+            val progress = ((animatedNeedleValue - glowThresh) / denom).coerceIn(0f, 1f)
+            (0.45f + 0.55f * progress).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        val isGlowing = glowIntensity > 0.01f
+
+        // 1. Pure black dial face & signature Eurocharged clean white (or blue-glow) open arch
         canvas.drawCircle(cx, cy, radius, bgFacePaint)
+        if (isGlowing) {
+            glowFacePaint.alpha = (255f * glowIntensity).roundToInt().coerceIn(0, 255)
+            canvas.drawCircle(cx, cy, radius, glowFacePaint)
+        }
 
         val archR = radius * 0.94f
         outerArchRect.set(cx - archR, cy - archR, cx + archR, cy + archR)
-        outerArchPaint.strokeWidth = (radius * 0.036f).coerceAtLeast(2.2f)
-        outerArchPaint.color = if (isAlert) Color.parseColor("#EF4444") else Color.parseColor("#FFFFFF")
+        val archStroke = (radius * 0.036f).coerceAtLeast(2.2f)
+        if (isGlowing) {
+            glowStrokePaint.strokeWidth = archStroke * 3.4f
+            glowStrokePaint.color = withAlpha(glowColor, (38f * glowIntensity).roundToInt())
+            canvas.drawArc(outerArchRect, startAngleDeg, sweepAngleDeg, false, glowStrokePaint)
+
+            glowStrokePaint.strokeWidth = archStroke * 1.9f
+            glowStrokePaint.color = withAlpha(glowColor, (90f * glowIntensity).roundToInt())
+            canvas.drawArc(outerArchRect, startAngleDeg, sweepAngleDeg, false, glowStrokePaint)
+        }
+        outerArchPaint.strokeWidth = archStroke
+        outerArchPaint.color = when {
+            isAlert -> Color.parseColor("#EF4444")
+            isGlowing -> glowColor
+            else -> Color.parseColor("#FFFFFF")
+        }
         canvas.drawArc(outerArchRect, startAngleDeg, sweepAngleDeg, false, outerArchPaint)
 
         // 2. Subtle inner hairline track & restrained zone arcs
@@ -272,7 +339,8 @@ class AnalogGaugeView @JvmOverloads constructor(
         innerTrackPaint.strokeWidth = (radius * 0.022f).coerceAtLeast(1.5f)
         canvas.drawArc(arcRect, startAngleDeg, sweepAngleDeg, false, innerTrackPaint)
 
-        zonePaint.strokeWidth = (radius * 0.022f).coerceAtLeast(1.5f)
+        val zoneStroke = (radius * 0.022f).coerceAtLeast(1.5f)
+        zonePaint.strokeWidth = zoneStroke
 
         val span = (maxValue - minValue).coerceAtLeast(0.001f)
         for (zone in zones) {
@@ -283,6 +351,23 @@ class AnalogGaugeView @JvmOverloads constructor(
             val sweep = ((zEnd - zStart) / span) * sweepAngleDeg
             zonePaint.color = zone.color
             canvas.drawArc(arcRect, startAng, sweep, false, zonePaint)
+        }
+
+        // Illuminated positive-boost sweep arc from glowThreshold up to active needle
+        if (isGlowing && glowThresh != null) {
+            val gStart = glowThresh.coerceIn(minValue, maxValue)
+            val gEnd = animatedNeedleValue.coerceIn(gStart, maxValue)
+            if (gEnd > gStart) {
+                val gStartAng = startAngleDeg + ((gStart - minValue) / span) * sweepAngleDeg
+                val gSweep = ((gEnd - gStart) / span) * sweepAngleDeg
+                glowSweepPaint.strokeWidth = zoneStroke * 2.8f
+                glowSweepPaint.color = withAlpha(glowColor, (72f * glowIntensity).roundToInt())
+                canvas.drawArc(arcRect, gStartAng, gSweep, false, glowSweepPaint)
+
+                glowSweepPaint.strokeWidth = zoneStroke * 1.4f
+                glowSweepPaint.color = withAlpha(Color.parseColor("#7DD3FC"), (215f * glowIntensity).roundToInt())
+                canvas.drawArc(arcRect, gStartAng, gSweep, false, glowSweepPaint)
+            }
         }
 
         // 3. Ticks & numeric scale labels
@@ -364,21 +449,31 @@ class AnalogGaugeView @JvmOverloads constructor(
         val boxBottom = cy + radius * 0.87f
         boxRect.set(cx - boxHalfW, boxTop, cx + boxHalfW, boxBottom)
         val baseBoxStroke = (radius * 0.012f).coerceAtLeast(1f)
+        canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxPaint)
         if (resetFlashAlpha > 0.01f) {
             valueBoxBorderPaint.color = Color.argb((80 + 175 * resetFlashAlpha).toInt().coerceIn(0, 255), 255, 255, 255)
             valueBoxBorderPaint.strokeWidth = baseBoxStroke * (1f + resetFlashAlpha)
+            canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
+        } else if (isGlowing) {
+            valueBoxBorderPaint.color = withAlpha(glowColor, (60f * glowIntensity).roundToInt())
+            valueBoxBorderPaint.strokeWidth = baseBoxStroke * 2.4f
+            canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
+
+            valueBoxBorderPaint.color = withAlpha(glowColor, (150f + 95f * glowIntensity).roundToInt())
+            valueBoxBorderPaint.strokeWidth = baseBoxStroke * 1.3f
+            canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
         } else {
             valueBoxBorderPaint.color = Color.parseColor("#202024")
             valueBoxBorderPaint.strokeWidth = baseBoxStroke
+            canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
         }
-        canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxPaint)
-        canvas.drawRoundRect(boxRect, radius * 0.08f, radius * 0.08f, valueBoxBorderPaint)
 
         val formattedVal = formatDigitalValue(currentValue)
         digitalValuePaint.textSize = (radius * 0.205f).coerceAtLeast(14f)
         digitalValuePaint.color = when {
             currentValue == null -> Color.parseColor("#52525B")
             isAlert -> Color.parseColor("#EF4444")
+            isGlowing -> Color.parseColor("#7DD3FC")
             else -> Color.parseColor("#FFFFFF")
         }
         canvas.drawText(formattedVal, cx, cy + radius * 0.53f, digitalValuePaint)
@@ -429,12 +524,26 @@ class AnalogGaugeView @JvmOverloads constructor(
         needlePath.close()
         canvas.drawPath(needlePath, needlePaint)
 
-        // Minimalist black hub with crisp white ring
+        // Minimalist black hub with crisp white (or electric-blue glowing) ring
         val hubR = radius * 0.088f
         canvas.drawCircle(cx, cy, hubR, hubFillPaint)
-        hubRingPaint.strokeWidth = (radius * 0.018f).coerceAtLeast(1.5f)
-        hubRingPaint.color = if (isAlert) Color.parseColor("#EF4444") else Color.parseColor("#FFFFFF")
+        val hubStroke = (radius * 0.018f).coerceAtLeast(1.5f)
+        if (isGlowing) {
+            glowHubPaint.strokeWidth = hubStroke * 2.6f
+            glowHubPaint.color = withAlpha(glowColor, (85f * glowIntensity).roundToInt())
+            canvas.drawCircle(cx, cy, hubR, glowHubPaint)
+        }
+        hubRingPaint.strokeWidth = hubStroke
+        hubRingPaint.color = when {
+            isAlert -> Color.parseColor("#EF4444")
+            isGlowing -> glowColor
+            else -> Color.parseColor("#FFFFFF")
+        }
         canvas.drawCircle(cx, cy, hubR, hubRingPaint)
+    }
+
+    private fun withAlpha(color: Int, alpha: Int): Int {
+        return (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
     }
 
     private fun formatScaleLabel(value: Float): String {

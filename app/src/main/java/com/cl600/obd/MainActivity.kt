@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -15,6 +16,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.cl600.obd.model.ConnectionState
@@ -23,10 +25,12 @@ import com.cl600.obd.model.TransportType
 import com.cl600.obd.model.UnitSystem
 import com.cl600.obd.obd.ObdManager
 import com.cl600.obd.obd.UsbSerialHelper
+import com.cl600.obd.trips.TripRecorder
 import com.cl600.obd.ui.CodesViewBinder
 import com.cl600.obd.ui.ConnectViewBinder
 import com.cl600.obd.ui.GaugesViewBinder
 import com.cl600.obd.ui.LogViewBinder
+import com.cl600.obd.ui.TripsViewBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,9 +43,10 @@ class MainActivity : AppCompatActivity() {
 
     private enum class Tab(val index: Int) {
         GAUGES(0),
-        CODES(1),
-        CONNECT(2),
-        LOG(3)
+        TRIPS(1),
+        CODES(2),
+        CONNECT(3),
+        LOG(4)
     }
 
     private companion object {
@@ -53,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewStatusDot: View
     private lateinit var tvStatusBadge: TextView
     private lateinit var btnTabGauges: TextView
+    private lateinit var btnTabTrips: TextView
     private lateinit var btnTabCodes: TextView
     private lateinit var btnTabConnect: TextView
     private lateinit var btnTabLog: TextView
@@ -61,17 +67,28 @@ class MainActivity : AppCompatActivity() {
     private lateinit var contentContainer: FrameLayout
 
     private lateinit var viewGauges: View
+    private lateinit var viewTrips: View
     private lateinit var viewCodes: View
     private lateinit var viewConnect: View
     private lateinit var viewLog: View
 
     private lateinit var gaugesBinder: GaugesViewBinder
+    private lateinit var tripsBinder: TripsViewBinder
     private lateinit var codesBinder: CodesViewBinder
     private lateinit var connectBinder: ConnectViewBinder
     private lateinit var logBinder: LogViewBinder
 
     private var activeTab = Tab.GAUGES
     private var usbReceiversRegistered = false
+
+    private val tripBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (!tripsBinder.handleBackPressed()) {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+            }
+        }
+    }
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -106,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         viewStatusDot = findViewById(R.id.viewStatusDot)
         tvStatusBadge = findViewById(R.id.tvStatusBadge)
         btnTabGauges = findViewById(R.id.btnTabGauges)
+        btnTabTrips = findViewById(R.id.btnTabTrips)
         btnTabCodes = findViewById(R.id.btnTabCodes)
         btnTabConnect = findViewById(R.id.btnTabConnect)
         btnTabLog = findViewById(R.id.btnTabLog)
@@ -115,16 +133,24 @@ class MainActivity : AppCompatActivity() {
 
         val inflater = LayoutInflater.from(this)
         viewGauges = inflater.inflate(R.layout.view_gauges, contentContainer, false)
+        viewTrips = inflater.inflate(R.layout.view_trips, contentContainer, false)
         viewCodes = inflater.inflate(R.layout.view_codes, contentContainer, false)
         viewConnect = inflater.inflate(R.layout.view_connect, contentContainer, false)
         viewLog = inflater.inflate(R.layout.view_log, contentContainer, false)
 
         contentContainer.addView(viewGauges)
+        contentContainer.addView(viewTrips)
         contentContainer.addView(viewCodes)
         contentContainer.addView(viewConnect)
         contentContainer.addView(viewLog)
 
         gaugesBinder = GaugesViewBinder(viewGauges)
+        tripsBinder = TripsViewBinder(
+            root = viewTrips,
+            context = this,
+            uiScope = uiScope,
+            onDetailVisibilityChanged = { updateTripBackCallbackState() }
+        )
         codesBinder = CodesViewBinder(viewCodes, this)
         connectBinder = ConnectViewBinder(
             root = viewConnect,
@@ -134,7 +160,10 @@ class MainActivity : AppCompatActivity() {
         )
         logBinder = LogViewBinder(viewLog, this)
 
+        onBackPressedDispatcher.addCallback(this, tripBackCallback)
+
         btnTabGauges.setOnClickListener { selectTab(Tab.GAUGES) }
+        btnTabTrips.setOnClickListener { selectTab(Tab.TRIPS) }
         btnTabCodes.setOnClickListener { selectTab(Tab.CODES) }
         btnTabConnect.setOnClickListener { selectTab(Tab.CONNECT) }
         btnTabLog.setOnClickListener { selectTab(Tab.LOG) }
@@ -197,14 +226,21 @@ class MainActivity : AppCompatActivity() {
     private fun selectTab(tab: Tab) {
         activeTab = tab
         viewGauges.visibility = if (tab == Tab.GAUGES) View.VISIBLE else View.GONE
+        viewTrips.visibility = if (tab == Tab.TRIPS) View.VISIBLE else View.GONE
         viewCodes.visibility = if (tab == Tab.CODES) View.VISIBLE else View.GONE
         viewConnect.visibility = if (tab == Tab.CONNECT) View.VISIBLE else View.GONE
         viewLog.visibility = if (tab == Tab.LOG) View.VISIBLE else View.GONE
 
         btnTabGauges.isSelected = tab == Tab.GAUGES
+        btnTabTrips.isSelected = tab == Tab.TRIPS
         btnTabCodes.isSelected = tab == Tab.CODES
         btnTabConnect.isSelected = tab == Tab.CONNECT
         btnTabLog.isSelected = tab == Tab.LOG
+        updateTripBackCallbackState()
+    }
+
+    private fun updateTripBackCallbackState() {
+        tripBackCallback.isEnabled = (activeTab == Tab.TRIPS && tripsBinder.isInDetailView())
     }
 
     private fun observeManagerFlows() {
@@ -221,6 +257,36 @@ class MainActivity : AppCompatActivity() {
                 btnToggleUnits.text = if (config.unitSystem == UnitSystem.IMPERIAL) "PSI/°F" else "BAR/°C"
                 updateTopStatus(state)
             }
+        }
+
+        uiScope.launch {
+            combine(
+                TripRecorder.isRecording,
+                TripRecorder.liveSamples,
+                TripRecorder.liveSummary,
+                TripRecorder.savedTrips,
+                ObdManager.config,
+                ObdManager.connectionState
+            ) { values ->
+                @Suppress("UNCHECKED_CAST")
+                val isRec = values[0] as Boolean
+                @Suppress("UNCHECKED_CAST")
+                val samples = values[1] as List<com.cl600.obd.model.TripSample>
+                val liveSummary = values[2] as com.cl600.obd.model.TripSummary?
+                @Suppress("UNCHECKED_CAST")
+                val saved = values[3] as List<com.cl600.obd.model.TripSummary>
+                val config = values[4] as com.cl600.obd.model.ConnectionConfig
+                val connState = values[5] as ConnectionState
+
+                tripsBinder.render(isRec, samples, liveSummary, saved, config.unitSystem, connState)
+                if (isRec) {
+                    btnTabTrips.text = "● TRIPS"
+                    btnTabTrips.setTextColor(Color.parseColor("#EF4444"))
+                } else {
+                    btnTabTrips.text = getString(R.string.tab_trips)
+                    btnTabTrips.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+                }
+            }.collect {}
         }
 
         uiScope.launch {

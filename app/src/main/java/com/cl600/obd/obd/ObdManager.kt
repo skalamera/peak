@@ -11,6 +11,7 @@ import com.cl600.obd.model.ObdTelemetry
 import com.cl600.obd.model.TransportType
 import com.cl600.obd.model.UnitSystem
 import com.cl600.obd.prefs.AppPreferences
+import com.cl600.obd.trips.TripRecorder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,7 @@ object ObdManager {
             appContext = appCtx
             val appPrefs = AppPreferences(appCtx)
             prefs = appPrefs
+            TripRecorder.init(appCtx)
             val loaded = appPrefs.loadConfig()
             _config.value = loaded
             recomputeEffectiveBaro()
@@ -305,6 +307,10 @@ object ObdManager {
 
     fun handleUsbDetached(deviceName: String?) {
         pendingUsbConnect = false
+        if (TripRecorder.isRecording.value) {
+            TripRecorder.stopAndSaveRecording()
+            appendLog(LogLevel.INFO, "Auto-saved recorded trip on USB detach")
+        }
         val session = activeSession
         if (session?.isDirectKline == true || _connectionState.value is ConnectionState.Connecting) {
             connectionJob?.cancel()
@@ -324,6 +330,10 @@ object ObdManager {
     }
 
     fun disconnect() {
+        if (TripRecorder.isRecording.value) {
+            TripRecorder.stopAndSaveRecording()
+            appendLog(LogLevel.INFO, "Auto-saved recorded trip")
+        }
         pendingUsbConnect = false
         connectionJob?.cancel()
         connectionJob = null
@@ -602,6 +612,8 @@ object ObdManager {
                 effectiveBaroKpa = effectiveBaro,
                 baroSource = baroLabel
             )
+
+            TripRecorder.onTelemetryUpdate(_telemetry.value)
 
             cycle++
             delay(25L)

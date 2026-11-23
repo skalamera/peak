@@ -297,6 +297,8 @@ class GaugesViewBinder(root: View) {
         val warnColor = Color.parseColor("#D97706")
         val redColor = Color.parseColor("#EF4444")
 
+        val boostGlowColor = Color.parseColor("#38BDF8")
+
         if (unitSystem == UnitSystem.IMPERIAL) {
             gaugeBoost.configure(
                 title = "BOOST / VAC",
@@ -313,6 +315,8 @@ class GaugesViewBinder(root: View) {
                 warningThreshold = 20f,
                 decimalPlaces = 1,
                 showPlusSign = true,
+                glowThreshold = 0f,
+                glowColor = boostGlowColor,
                 subTextFormatter = { cur, peak ->
                     when {
                         cur != null && cur < -0.25f ->
@@ -359,6 +363,8 @@ class GaugesViewBinder(root: View) {
                 warningThreshold = 1.38f,
                 decimalPlaces = 2,
                 showPlusSign = true,
+                glowThreshold = 0f,
+                glowColor = boostGlowColor,
                 subTextFormatter = { _, peak ->
                     if (peak != null) String.format(Locale.US, "PK %+.2f", peak) else "M275 BITURBO"
                 }

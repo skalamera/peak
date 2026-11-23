@@ -3,6 +3,7 @@
     <string name="app_name">CL600 OBD</string>
     <string name="brand_title">CL600 V12</string>
     <string name="tab_gauges">GAUGES</string>
+    <string name="tab_trips">TRIPS</string>
     <string name="tab_codes">CODES</string>
     <string name="tab_connect">CONNECT</string>
     <string name="tab_log">LOG</string>
