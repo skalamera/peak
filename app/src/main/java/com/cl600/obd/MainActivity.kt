@@ -23,6 +23,7 @@ import com.cl600.obd.model.ConnectionState
 import com.cl600.obd.model.LogLevel
 import com.cl600.obd.model.TransportType
 import com.cl600.obd.model.UnitSystem
+import com.cl600.obd.music.MusicSidebarController
 import com.cl600.obd.obd.ObdManager
 import com.cl600.obd.obd.UsbSerialHelper
 import com.cl600.obd.trips.TripRecorder
@@ -77,12 +78,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var codesBinder: CodesViewBinder
     private lateinit var connectBinder: ConnectViewBinder
     private lateinit var logBinder: LogViewBinder
+    private lateinit var musicController: MusicSidebarController
 
     private var activeTab = Tab.GAUGES
     private var usbReceiversRegistered = false
 
     private val tripBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
+            if (::musicController.isInitialized && musicController.isExpanded()) {
+                musicController.collapseDrawer()
+                return
+            }
             if (!tripsBinder.handleBackPressed()) {
                 isEnabled = false
                 onBackPressedDispatcher.onBackPressed()
@@ -159,6 +165,11 @@ class MainActivity : AppCompatActivity() {
             onRequestConnect = { transport -> ObdManager.connect(transport) }
         )
         logBinder = LogViewBinder(viewLog, this)
+        musicController = MusicSidebarController(
+            activity = this,
+            rootView = findViewById(R.id.mainWorkspaceFrame),
+            onDrawerStateChanged = { updateTripBackCallbackState() }
+        )
 
         onBackPressedDispatcher.addCallback(this, tripBackCallback)
 
@@ -194,6 +205,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshUsbDeviceList(logDevices = false)
+        if (::musicController.isInitialized) {
+            musicController.onResume()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -208,6 +222,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (::musicController.isInitialized) {
+            musicController.destroy()
+        }
         uiScope.cancel()
         if (usbReceiversRegistered) {
             try {
@@ -240,7 +257,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTripBackCallbackState() {
-        tripBackCallback.isEnabled = (activeTab == Tab.TRIPS && tripsBinder.isInDetailView())
+        val drawerOpen = ::musicController.isInitialized && musicController.isExpanded()
+        tripBackCallback.isEnabled =
+            drawerOpen || (activeTab == Tab.TRIPS && tripsBinder.isInDetailView())
     }
 
     private fun observeManagerFlows() {

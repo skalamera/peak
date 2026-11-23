@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg_root"
@@ -185,9 +186,274 @@
         android:background="@color/border_subtle" />
 
     <FrameLayout
-        android:id="@+id/contentContainer"
+        android:id="@+id/mainWorkspaceFrame"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1"
+        android:clipChildren="true"
+        android:clipToPadding="true">
+
+        <!-- Main content + slim 44dp Quick-Control Rail -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="horizontal">
+
+            <FrameLayout
+                android:id="@+id/contentContainer"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/layoutMusicRail"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:background="@color/bg_topbar"
+                android:orientation="horizontal">
+
+                <!-- 2dp live track progress hairline on left edge of rail -->
+                <FrameLayout
+                    android:id="@+id/viewRailProgressTrack"
+                    android:layout_width="2dp"
+                    android:layout_height="match_parent"
+                    android:background="@color/border_subtle">
+
+                    <View
+                        android:id="@+id/viewRailProgress"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="#E11D48"
+                        android:scaleY="0" />
+                </FrameLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:paddingTop="3dp"
+                    android:paddingBottom="3dp">
+
+                    <ImageButton
+                        android:id="@+id/btnRailExpand"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1.05"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Expand YouTube Music"
+                        android:padding="7dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_ytm_logo" />
+
+                    <View
+                        android:layout_width="22dp"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="1dp"
+                        android:layout_marginBottom="1dp"
+                        android:background="@color/border_subtle" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailLike"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Like track"
+                        android:padding="8dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_thumb_up" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailPrev"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Previous track"
+                        android:padding="7dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_media_prev" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailPlayPause"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_marginTop="1dp"
+                        android:layout_marginBottom="1dp"
+                        android:layout_weight="1.15"
+                        android:background="@drawable/bg_rail_play_pill"
+                        android:contentDescription="Play or pause"
+                        android:padding="7dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_media_play" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailNext"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Next track"
+                        android:padding="7dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_media_next" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailDislike"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Dislike track"
+                        android:padding="8dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_thumb_down" />
+
+                    <View
+                        android:layout_width="22dp"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="1dp"
+                        android:layout_marginBottom="1dp"
+                        android:background="@color/border_subtle" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailVolUp"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="0.95"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Volume up"
+                        android:padding="8dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_vol_up" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailVolDown"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="0.95"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Volume down"
+                        android:padding="8dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_vol_down" />
+
+                    <ImageButton
+                        android:id="@+id/btnRailHide"
+                        android:layout_width="36dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="0.85"
+                        android:alpha="0.65"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Hide music rail"
+                        android:padding="8dp"
+                        android:scaleType="centerInside"
+                        app:srcCompat="@drawable/ic_chevron_right" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Auto-fading floating Now Playing pill on track change -->
+        <LinearLayout
+            android:id="@+id/layoutNowPlayingBanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="52dp"
+            android:layout_marginRight="52dp"
+            android:alpha="0"
+            android:background="@drawable/bg_card_dark"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="10dp"
+            android:paddingTop="6dp"
+            android:paddingRight="12dp"
+            android:paddingBottom="6dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:contentDescription="Playing"
+                app:srcCompat="@drawable/ic_ytm_logo" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_marginLeft="8dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvBannerTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:maxWidth="200dp"
+                    android:textColor="@color/text_primary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvBannerArtist"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:maxWidth="200dp"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Ultra-hidden 20x58dp Peek Tab -->
+        <LinearLayout
+            android:id="@+id/btnMusicPeekTab"
+            android:layout_width="22dp"
+            android:layout_height="58dp"
+            android:layout_gravity="center_vertical|end"
+            android:background="@drawable/bg_music_peek"
+            android:clickable="true"
+            android:contentDescription="Show music rail"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="♪"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Dim scrim behind expanded slide-over drawer -->
+        <View
+            android:id="@+id/viewMusicScrim"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:background="#A6000000"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone" />
+
+        <!-- Slide-over 364dp drawer stays VISIBLE off-screen via translationX so WebView audio never stops -->
+        <include
+            android:id="@+id/musicDrawerRoot"
+            layout="@layout/view_music_drawer"
+            android:layout_width="364dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end" />
+
+    </FrameLayout>
 
 </LinearLayout>
