@@ -168,9 +168,24 @@ class AgentsRulesRegressionTest {
     private fun extractBraceBlock(source: String, openBraceIndex: Int): String =
         source.substring(openBraceIndex + 1, findMatchingCloseBrace(source, openBraceIndex))
 
+    // Kotlin allows whitespace (and comments, already stripped to whitespace) between a member-access
+    // dot and the member name, so `rootProject.\n    tasks...` must be treated as a foreign receiver
+    // even though the regex lookbehind only sees the character immediately before the match.
+    private fun followsForeignReceiverOrIdentifier(source: String, matchStart: Int): Boolean {
+        if (matchStart > 0 && Character.isJavaIdentifierPart(source[matchStart - 1])) {
+            return true
+        }
+        var p = matchStart - 1
+        while (p >= 0 && source[p].isWhitespace()) {
+            p--
+        }
+        return p >= 0 && source[p] == '.'
+    }
+
     private fun codeMatches(regex: Regex, source: String): Sequence<MatchResult> = sequence {
         var cursor = 0
         for (match in regex.findAll(source)) {
+            if (followsForeignReceiverOrIdentifier(source, match.range.first)) continue
             while (cursor < match.range.first) {
                 cursor = advancePastLiteral(source, cursor) ?: (cursor + 1)
             }
@@ -423,6 +438,65 @@ class AgentsRulesRegressionTest {
         assertFalse(
             "Backtick identifier containing input call text must not count as a real declaration",
             hasTestTaskAgentsMdInput(backtickWrappingCall)
+        )
+    }
+
+    @Test
+    fun crit98_gradleInputCheckRejectsWhitespaceAfterReceiverDot() {
+        val inputCall = "inputs.file(rootProject.layout.projectDirectory.file(\"AGENTS.md\"))"
+        val testBlockStart = "tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {"
+
+        assertFalse(
+            "Baseline: Test block on a foreign receiver must be rejected",
+            hasTestTaskAgentsMdInput("rootProject.$testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Test block on a foreign receiver split by newline after the dot must be rejected",
+            hasTestTaskAgentsMdInput("rootProject.\n    $testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Test block on a foreign receiver split by a space after the dot must be rejected",
+            hasTestTaskAgentsMdInput("project(\":lib\"). $testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Test block on a foreign receiver via safe-call split by newline must be rejected",
+            hasTestTaskAgentsMdInput("rootProject?.\n    $testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Test block on a foreign receiver split by a comment after the dot must be rejected",
+            hasTestTaskAgentsMdInput("rootProject./* decoy */$testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Test block on a foreign receiver split by a line comment after the dot must be rejected",
+            hasTestTaskAgentsMdInput("rootProject. // decoy\n    $testBlockStart\n    $inputCall\n}")
+        )
+        assertFalse(
+            "Input declaration on a foreign receiver split by newline after the dot must be rejected",
+            hasTestTaskAgentsMdInput("$testBlockStart\n    other.\n        $inputCall\n}")
+        )
+        assertFalse(
+            "Input declaration on a foreign receiver split by a space after the dot must be rejected",
+            hasTestTaskAgentsMdInput("$testBlockStart\n    other. $inputCall\n}")
+        )
+        assertFalse(
+            "Prefixed Unicode identifier must not match tasks/inputs",
+            hasTestTaskAgentsMdInput("α$testBlockStart\n    $inputCall\n}")
+        )
+        assertTrue(
+            "Test block at statement start after an identifier on the previous line must still be accepted",
+            hasTestTaskAgentsMdInput("val x = foo\n$testBlockStart\n    $inputCall\n}")
+        )
+        assertTrue(
+            "Input declaration at statement start after an identifier on the previous line must still be accepted",
+            hasTestTaskAgentsMdInput("$testBlockStart\n    val y = bar\n    $inputCall\n}")
+        )
+        assertTrue(
+            "Test block after a string literal ending in a dot must still be accepted",
+            hasTestTaskAgentsMdInput("val s = \"end.\"\n$testBlockStart\n    $inputCall\n}")
+        )
+        assertTrue(
+            "Test block after a comment ending in a dot must still be accepted",
+            hasTestTaskAgentsMdInput("// comment ending with a dot.\n$testBlockStart\n    $inputCall\n}")
         )
     }
 }
