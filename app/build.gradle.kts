@@ -44,6 +44,12 @@ android {
     }
 }
 
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.file(rootProject.layout.projectDirectory.file("AGENTS.md"))
+        .withPropertyName("agentsPolicy")
+        .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.6.1")
